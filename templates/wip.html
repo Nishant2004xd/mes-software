@@ -1,0 +1,373 @@
+{% extends "layout.html" %}
+
+{% block title %}WIP Tracker{% endblock %}
+
+{% block content %}
+<style>
+    .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 20px;
+        padding-bottom: 15px;
+        border-bottom: 1px solid var(--border-color);
+    }
+    .actions {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+    }
+    .filter-select, .filter-input {
+        padding: 8px;
+        border: 1px solid #ccc;
+        border-radius: 5px;
+        min-width: 140px;
+    }
+    .total-inv {
+        background-color: #f0fdf4;
+        color: #166534;
+        font-weight: bold;
+        text-align: center;
+    }
+    .clickable-cell {
+        cursor: pointer;
+        transition: background-color 0.2s;
+        font-weight: 500;
+        color: #2563eb; /* Blue to indicate clickability */
+    }
+    .clickable-cell:hover {
+        background-color: #dbeafe;
+        text-decoration: underline;
+    }
+    /* Modal Styles */
+    .action-form {
+        margin-bottom: 15px;
+        padding: 15px;
+        background: #f9fafb;
+        border-radius: 8px;
+        border: 1px solid #e5e7eb;
+    }
+    .action-form h4 { margin-top: 0; margin-bottom: 10px; font-size: 1rem; }
+</style>
+
+<div class="header">
+    <h1>WIP Tracker</h1>
+
+    <div class="actions">
+        <form action="{{ url_for('wip_tracking') }}" method="GET" style="display: flex; gap: 10px; align-items: center;">
+
+            <select name="type" onchange="this.form.submit()" class="filter-select">
+                <option value="">All Types</option>
+                {% for t in type_options %}
+                    <option value="{{ t }}" {% if selected_type == t %}selected{% endif %}>{{ t }}</option>
+                {% endfor %}
+            </select>
+
+            <select name="category" onchange="this.form.submit()" class="filter-select">
+                <option value="">All Categories</option>
+                {% for c in category_options %}
+                    <option value="{{ c }}" {% if selected_category == c %}selected{% endif %}>{{ c }}</option>
+                {% endfor %}
+            </select>
+
+            <input type="search" name="search" placeholder="Item Code / Desc" value="{{ search_query }}" class="filter-input">
+            <button type="submit" class="button button-secondary">Search</button>
+
+            {% if search_query or selected_type or selected_category %}
+                <a href="{{ url_for('wip_tracking') }}" class="button button-secondary" style="background-color: #6b7280; text-decoration: none; padding: 8px 12px; display: inline-block;">Clear</a>
+            {% endif %}
+        </form>
+    </div>
+</div>
+
+<div class="table-container">
+    <table id="wip-table">
+        <thead>
+            <tr>
+                <th style="width: 50px;">S.No</th>
+                <th style="text-align: left;">Item Code</th>
+                <th style="text-align: left;">Description</th>
+
+                <th class="total-inv">Total Inv</th>
+
+                {% for stage in stages %}
+                    <th>{{ stage }}</th>
+                {% endfor %}
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in master_items %}
+            <tr data-item-code="{{ item['Item code'] }}">
+                <td style="text-align: center;">{{ pagination.per_page * (pagination.page - 1) + loop.index }}</td>
+                <td style="text-align: left; font-weight: 600;">{{ item['Item code'] }}</td>
+                <td style="text-align: left;">{{ item['Description'] }}</td>
+
+                <td class="total-inv">
+                    {{ item['Total Inv'] }}
+                </td>
+
+                {% for stage in stages %}
+                    {% set quantity = item.get(stage, 0) %}
+                    <td class="stage-qty {% if quantity > 0 %}clickable-cell{% endif %}"
+                        data-stage="{{ stage }}"
+                        data-item-code="{{ item['Item code'] }}"
+                        data-quantity="{{ quantity }}"
+                        style="text-align: center; {% if quantity == 0 %}color: #ccc;{% endif %}">
+                        {{ quantity }}
+                    </td>
+                {% endfor %}
+
+            </tr>
+            {% else %}
+            <tr><td colspan="{{ 4 + stages|length }}" class="placeholder" style="text-align: center; padding: 20px;">No items found matching the current filters.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{% if pagination and pagination.total_pages > 1 %}
+<nav class="pagination-container">
+    <ul class="pagination">
+        <li class="page-item {% if not pagination.has_prev %}disabled{% endif %}">
+            <a class="page-link" href="{{ url_for('wip_tracking', page=pagination.prev_num, search=search_query, type=selected_type, category=selected_category) }}">Previous</a>
+        </li>
+        <li class="page-item disabled">
+            <span class="page-link">Page {{ pagination.page }} of {{ pagination.total_pages }}</span>
+        </li>
+        <li class="page-item {% if not pagination.has_next %}disabled{% endif %}">
+            <a class="page-link" href="{{ url_for('wip_tracking', page=pagination.next_num, search=search_query, type=selected_type, category=selected_category) }}">Next</a>
+        </li>
+    </ul>
+</nav>
+{% endif %}
+
+<div id="action-modal" class="modal">
+    <div class="modal-content" style="max-width: 500px;">
+        <span class="close-button">&times;</span>
+        <h3 id="action-modal-title">Actions</h3>
+        <p id="action-modal-subtitle" style="color: #666; margin-bottom: 15px;"></p>
+
+        <form id="move-form" class="action-form">
+            <h4 style="color: #2563eb;">Move Item</h4>
+            <input type="hidden" id="move-item-code" name="item_code">
+            <input type="hidden" id="source-stage" name="source_stage">
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+                <div>
+                    <label>To Stage:</label>
+                    <select id="dest-stage" name="dest_stage" required class="modal-input"></select>
+                </div>
+                <div>
+                    <label>Quantity:</label>
+                    <input type="number" id="move-quantity" name="quantity" min="1" required class="modal-input">
+                </div>
+            </div>
+            <button type="submit" class="button" style="width: 100%;">Confirm Move</button>
+        </form>
+
+        <form id="dispatch-form" action="{{ url_for('dispatch_item') }}" method="POST" class="action-form" style="display:none; background-color: #f0fdf4; border-color: #bbf7d0;">
+            <h4 style="color: #166534;">Dispatch Item</h4>
+            <input type="hidden" id="dispatch-item-code" name="item_code">
+
+            <div style="margin-bottom: 10px;">
+                <label>Quantity to Dispatch:</label>
+                <input type="number" id="dispatch-quantity" name="quantity" min="1" required class="modal-input">
+            </div>
+            <button type="submit" class="button" style="width: 100%; background-color: #166534;">Confirm Dispatch</button>
+        </form>
+
+        <form id="flag-form" class="action-form" style="background-color: #fffbeb; border-color: #fde68a;">
+            <h4 style="color: #b45309;">Flag / Report Issue</h4>
+            <input type="hidden" id="flag-item-code" name="item_code">
+            <input type="hidden" id="flag-stage" name="stage">
+
+            <div style="margin-bottom: 10px;">
+                <label>Quantity Affected:</label>
+                <input type="number" id="flag-quantity" name="quantity" min="1" required class="modal-input">
+            </div>
+            <div style="margin-bottom: 10px;">
+                <label>Reason / Remark:</label>
+                <textarea id="flag-remark" name="remark" required class="modal-input" rows="2"></textarea>
+            </div>
+            <button type="submit" class="button" style="width: 100%; background-color: #d97706;">Log Issue</button>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+    const actionModal = document.getElementById('action-modal');
+    // We get the list of stages from Python to populate the "To Stage" dropdown
+    const allStages = {{ stages|tojson }};
+
+    // --- Click Logic ---
+    document.querySelectorAll('.clickable-cell').forEach(cell => {
+        cell.addEventListener('click', function() {
+            const itemCode = this.dataset.itemCode;
+            const stage = this.dataset.stage;
+            const quantity = parseInt(this.dataset.quantity);
+
+            openActionModal(itemCode, stage, quantity);
+        });
+    });
+
+    function openActionModal(itemCode, stage, quantity) {
+        // Update Title & Subtitle
+        document.getElementById('action-modal-title').textContent = `Actions for ${itemCode}`;
+        document.getElementById('action-modal-subtitle').textContent = `Current Stage: ${stage} | Available: ${quantity}`;
+
+        // --- 1. Setup Move Form ---
+        const moveForm = document.getElementById('move-form');
+        const dispatchForm = document.getElementById('dispatch-form');
+
+        if (stage === 'FG') {
+            // IF FG: Hide Move, Show Dispatch
+            moveForm.style.display = 'none';
+            dispatchForm.style.display = 'block';
+
+            // Setup Dispatch Inputs
+            document.getElementById('dispatch-item-code').value = itemCode;
+            document.getElementById('dispatch-quantity').max = quantity;
+            document.getElementById('dispatch-quantity').value = 1;
+        } else {
+            // IF NORMAL STAGE: Show Move, Hide Dispatch
+            moveForm.style.display = 'block';
+            dispatchForm.style.display = 'none';
+
+            // Setup Move Inputs
+            document.getElementById('move-item-code').value = itemCode;
+            document.getElementById('source-stage').value = stage;
+            document.getElementById('move-quantity').max = quantity;
+            document.getElementById('move-quantity').value = 1;
+
+            // Populate "To Stage" Dropdown (Exclude current stage)
+            const destSelect = document.getElementById('dest-stage');
+            destSelect.innerHTML = '';
+
+            allStages.forEach(s => {
+                if (s !== stage) {
+                    const option = new Option(s, s);
+                    destSelect.add(option);
+                }
+            });
+
+            // Try to auto-select the next logical stage
+            const currentIndex = allStages.indexOf(stage);
+            if (currentIndex >= 0 && currentIndex < allStages.length - 1) {
+                destSelect.value = allStages[currentIndex + 1];
+            }
+        }
+
+        // --- 2. Setup Flag Form (Always available) ---
+        document.getElementById('flag-item-code').value = itemCode;
+        document.getElementById('flag-stage').value = stage;
+        document.getElementById('flag-quantity').max = quantity;
+        document.getElementById('flag-quantity').value = 1;
+        document.getElementById('flag-remark').value = '';
+
+        // Show Modal
+        actionModal.style.display = "block";
+    }
+
+    // --- Handling Move Form Submission via AJAX ---
+    document.getElementById('move-form').addEventListener('submit', function(e) {
+        e.preventDefault();
+
+        const data = {
+            item_code: document.getElementById('move-item-code').value,
+            source_stage: document.getElementById('source-stage').value,
+            dest_stage: document.getElementById('dest-stage').value,
+            quantity: document.getElementById('move-quantity').value
+        };
+
+        fetch("{{ url_for('move_item') }}", {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data)
+        })
+        .then(response => response.json())
+        .then(result => {
+            if (result.status === 'success') {
+                window.location.reload();
+            } else {
+                alert('Error: ' + result.message);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('An unexpected error occurred.');
+        });
+    });
+
+    // --- Handling Flag Form Submission via AJAX ---
+    document.getElementById('flag-form').addEventListener('submit', function(e) {
+        e.preventDefault();
+
+        const data = {
+            item_code: document.getElementById('flag-item-code').value,
+            stage: document.getElementById('flag-stage').value,
+            quantity: document.getElementById('flag-quantity').value,
+            remark: document.getElementById('flag-remark').value
+        };
+
+        fetch("{{ url_for('flag_item') }}", {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data)
+        })
+        .then(response => response.json())
+        .then(result => {
+            if (result.status === 'success') {
+                // 1. Hide the modal
+                document.getElementById('action-modal').style.display = "none";
+
+                // 2. Alert the user
+                alert("Issue logged. Quantity deducted from WIP.");
+
+                // 3. FORCE RELOAD so you see the number decrease instantly
+                window.location.reload();
+            } else {
+                alert('Error: ' + result.message);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('An unexpected error occurred.');
+        });
+    });
+
+    // Close Modal Logic
+    document.querySelectorAll('.close-button').forEach(btn => {
+        btn.onclick = () => actionModal.style.display = "none";
+    });
+    window.onclick = (e) => {
+        if(e.target == actionModal) actionModal.style.display = "none";
+    }
+    // --- Handling Dispatch Form Submission via AJAX (WIP Page) ---
+    document.getElementById('dispatch-form').addEventListener('submit', function(e) {
+        e.preventDefault();
+
+        const formData = new FormData(this);
+
+        fetch("{{ url_for('dispatch_item') }}", {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(result => {
+            if (result.status === 'success') {
+                // Success: Just reload the WIP page to show updated numbers
+                window.location.reload();
+            } else {
+                alert('Error: ' + result.message);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('An unexpected error occurred.');
+        });
+    });
+</script>
+{% endblock %}

@@ -1,0 +1,1521 @@
+======================================================================
+== FILE: config.py
+======================================================================
+
+# config.py
+
+class Config:
+    """
+    Configuration class for the Flask application.
+    Stores database connection details and other settings.
+    """
+    SECRET_KEY = 'nishant'  # Change this to your own random string
+    # --- DATABASE CONFIGURATION ---
+
+    # The name of your SQL Server instance.
+    # This is the value you use to connect in SQL Server Management Studio.
+    SERVER = 'DESKTOP-29MHU7D\\MSSQLSERVER01'
+
+    # The name of the specific database you want to connect to.
+    DATABASE = 'ELGI_Dash'
+
+    # The ODBC driver for SQL Server.
+    # 'ODBC Driver 17 for SQL Server' is a common modern choice.
+    # Ensure this driver is installed on the machine running the application.
+    DRIVER = '{ODBC Driver 17 for SQL Server}'
+
+    # Since we are using Windows Authentication (Integrated Security),
+    # a username and password are not required in this file.
+    # The connection string will specify 'Trusted_Connection=yes'.
+
+
+======================================================================
+== FILE: requirements.txt
+======================================================================
+
+# Flask Web Framework
+Flask==3.0.3
+
+# SQL Server Driver
+pyodbc==5.1.0
+
+# For reading and processing Excel files
+pandas==2.2.2
+openpyxl==3.1.2
+
+======================================================================
+== FILE: app\__init__.py
+======================================================================
+
+import os
+from flask import Flask
+from config import Config
+
+# --- Explicit Path Configuration ---
+# Get the absolute path of the directory where this file (__init__.py) is located.
+basedir = os.path.abspath(os.path.dirname(__file__))
+
+# Create the Flask application instance.
+# We explicitly tell Flask where the 'templates' and 'static' folders are,
+# relative to the application's root directory.
+app = Flask(__name__,
+            template_folder=os.path.join(os.path.dirname(basedir), 'templates'),
+            static_folder=os.path.join(os.path.dirname(basedir), 'static')
+            )
+
+# Apply the secret key and other configurations from config.py
+app.config.from_object(Config)
+
+# Import the routes at the bottom to prevent circular import errors.
+from app import routes
+
+======================================================================
+== FILE: app\database.py
+======================================================================
+
+import pyodbc
+from config import Config
+from datetime import datetime, date
+
+
+def get_db_connection():
+    """
+    Establishes a connection to the SQL Server database.
+    """
+    try:
+        connection_string = (
+            f"DRIVER={Config.DRIVER};"
+            f"SERVER={Config.SERVER};"
+            f"DATABASE={Config.DATABASE};"
+            f"Trusted_Connection=yes;"
+        )
+        conn = pyodbc.connect(connection_string)
+        return conn
+    except pyodbc.Error as ex:
+        sqlstate = ex.args[0]
+        print(f"ERROR: Database connection failed.")
+        print(f"SQLSTATE: {sqlstate}")
+        print(ex)
+        return None
+
+
+def row_to_dict(cursor, row):
+    """
+    Converts a pyodbc row into a Python dictionary, with robust data cleaning.
+    """
+    result_dict = {}
+    for i, column_description in enumerate(cursor.description):
+        column_name = column_description[0]
+        value = row[i]
+
+        # === NEW & IMPROVED FIX: Check column by name ===
+        # If the column is a date column but the value is not a valid date object
+        # (e.g., it's a float), set it to None to prevent crashing.
+        if column_name.upper() in ('DOJ', 'TODAY'):
+            if not isinstance(value, (datetime, date)):
+                value = None
+        # === END OF NEW FIX ===
+
+        # Check if the column type is numeric
+        is_numeric = column_description[1] in (
+            pyodbc.SQL_INTEGER, pyodbc.SQL_BIGINT, pyodbc.SQL_SMALLINT,
+            pyodbc.SQL_TINYINT, pyodbc.SQL_DECIMAL, pyodbc.SQL_NUMERIC,
+            pyodbc.SQL_FLOAT, pyodbc.SQL_REAL
+        )
+
+        if value is None and is_numeric:
+            result_dict[column_name] = 0
+        else:
+            result_dict[column_name] = value
+
+    return result_dict
+
+======================================================================
+== FILE: app\main.py
+======================================================================
+
+# This is the main entry point for the application.
+# Its only job is to import the app instance and run the development server.
+
+from app import app
+
+# This is a standard Python construct. The code inside this block will only run
+# when this script is executed directly (e.g., by running 'python app/main.py'
+# in the terminal). It will not run if this file is imported by another module.
+if __name__ == '__main__':
+    # This command starts the Flask development web server.
+    # debug=True is very useful during development. It enables two key features:
+    # 1. Automatic Reloader: The server will automatically restart whenever you
+    #    save a change to a file.
+    # 2. Interactive Debugger: If an error occurs, you'll see a detailed
+    #    traceback in your browser, which makes fixing bugs much easier.
+    app.run(debug=True)
+
+
+
+======================================================================
+== FILE: app\routes.py
+======================================================================
+
+import os
+import pandas as pd
+import numpy as np
+import pyodbc
+import traceback
+from datetime import datetime, date
+from flask import render_template, request, jsonify, redirect, url_for, flash, send_file
+from werkzeug.utils import secure_filename
+import calendar
+import io
+
+from app import app
+from app.database import get_db_connection, row_to_dict
+
+# App Configuration
+UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+
+# Helper Functions
+def replace_table_with_df(df, table_name, cursor):
+    cursor.execute(f"IF OBJECT_ID('dbo.{table_name}', 'U') IS NOT NULL DROP TABLE dbo.{table_name}")
+    df.columns = [f"[{col.strip()}]" for col in df.columns]
+    for col in df.columns:
+        if 'item code' in col.lower():
+            df[col] = df[col].astype(str).str.strip().str.lstrip("'")
+            break
+    numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
+    df[numeric_cols] = df[numeric_cols].fillna(0)
+    df = df.replace({pd.NaT: None})
+    dtype_mapping = {'int64': 'INT', 'float64': 'FLOAT', 'datetime64[ns]': 'DATETIME', 'object': 'NVARCHAR(MAX)'}
+    col_definitions = []
+    for col, dtype in df.dtypes.items():
+        sql_type = dtype_mapping.get(str(dtype), 'NVARCHAR(MAX)')
+        col_definitions.append(f"{col} {sql_type}")
+    create_table_sql = f"CREATE TABLE {table_name} ({', '.join(col_definitions)})"
+    cursor.execute(create_table_sql)
+    if df.empty: return
+    insert_sql = f"INSERT INTO {table_name} ({', '.join(df.columns)}) VALUES ({', '.join(['?' for _ in df.columns])})"
+    params = [tuple(row) for row in df.itertuples(index=False, name=None)]
+    cursor.executemany(insert_sql, params)
+
+
+def prioritize_plan_with_ahp(df_plan):
+    pairwise_comparison_matrix = np.array([
+        [1.0, 3.0, 5.0, 7.0], [1 / 3, 1.0, 2.0, 3.0],
+        [1 / 5, 1 / 2, 1.0, 2.0], [1 / 7, 1 / 3, 1 / 2, 1.0]
+    ])
+    criteria_names = ["type", "rpl", "category", "modified_plan"]
+    col_sums = pairwise_comparison_matrix.sum(axis=0)
+    norm_matrix = pairwise_comparison_matrix / col_sums
+    weights_array = norm_matrix.mean(axis=1)
+    weights = dict(zip(criteria_names, weights_array))
+
+    def score_type(x):
+        return 1 if str(x).strip().lower() == "lean" else 0
+
+    def score_rpl(x):
+        return 1 / (1 + float(x)) if pd.notnull(x) and x > 0 else 0
+
+    def score_category(x):
+        val = str(x).strip().lower()
+        if val == "milk run":
+            return 1.0
+        elif val == "runner":
+            return 0.75
+        elif val == "repeater":
+            return 0.5
+        elif val == "stranger":
+            return 0.25
+        else:
+            return 0
+
+    plan_col = 'Modified Release plan'
+    max_qty = df_plan[plan_col].max()
+    df_plan["qty_score"] = df_plan[plan_col] / max_qty if max_qty > 0 else 0
+    df_plan["type_score"] = df_plan["Type"].apply(score_type)
+    df_plan["rpl_score"] = df_plan["RPL days to Delivery"].apply(score_rpl)
+    df_plan["category_score"] = df_plan["Category"].apply(score_category)
+    df_plan["priority_weight"] = (
+            df_plan["type_score"] * weights["type"] +
+            df_plan["rpl_score"] * weights["rpl"] +
+            df_plan["category_score"] * weights["category"] +
+            df_plan["qty_score"] * weights["modified_plan"]
+    )
+    return df_plan
+
+
+# PAGE RENDERING ROUTES
+
+@app.route('/', endpoint='production_planning')
+def production_planning():
+    conn = get_db_connection()
+    plans = []
+    if conn:
+        try:
+            cursor = conn.cursor()
+            sql_select = "SELECT * FROM Production_pl ORDER BY [priority_weight] DESC"
+            cursor.execute(sql_select)
+            plans = [row_to_dict(cursor, row) for row in cursor.fetchall()]
+        except pyodbc.ProgrammingError:
+            flash("Production Plan has not been generated yet. Click 'Generate' to create one.", "info")
+        except Exception as e:
+            flash(f'Error fetching production plan: {e}', 'error')
+        finally:
+            if conn: conn.close()
+    return render_template('productionpl.html', plans=plans)
+
+
+@app.route('/wip', endpoint='wip_tracking')
+def wip_tracking():
+    conn = get_db_connection()
+    master_items = []
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM master")
+            master_items = [row_to_dict(cursor, row) for row in cursor.fetchall()]
+        except:
+            flash(f'Could not load WIP data. Please ensure master data is uploaded.', "error")
+        finally:
+            conn.close()
+    return render_template('wip.html', master_items=master_items)
+
+
+@app.route('/attendance', methods=['GET'], endpoint='attendance')
+def attendance():
+    conn = get_db_connection()
+    year = request.args.get('year', datetime.now().year, type=int)
+    month = request.args.get('month', datetime.now().month, type=int)
+
+    employees = []
+    attendance_data = {}
+    holidays = set()
+
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='holidays' and xtype='U')
+                CREATE TABLE holidays (
+                    holiday_date DATE PRIMARY KEY,
+                    description NVARCHAR(255)
+                );
+            """)
+            # === FIX IS HERE: Added PRIMARY KEY to the employees table definition ===
+            cursor.execute("""
+                IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='employees' and xtype='U')
+                CREATE TABLE employees (
+                    [E.code] NVARCHAR(50) PRIMARY KEY,
+                    [Name of the Employee] NVARCHAR(255),
+                    [Company / Contract] NVARCHAR(255),
+                    [DOJ] DATETIME,
+                    [Stage] NVARCHAR(255)
+                );
+            """)
+            cursor.execute("""
+                IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='attendance_log' and xtype='U')
+                CREATE TABLE attendance_log (
+                    log_id INT IDENTITY(1,1) PRIMARY KEY,
+                    employee_code NVARCHAR(50) FOREIGN KEY REFERENCES employees([E.code]) ON DELETE CASCADE,
+                    attendance_date DATE,
+                    status NVARCHAR(50),
+                    UNIQUE (employee_code, attendance_date)
+                );
+            """)
+            conn.commit()
+
+            cursor.execute("SELECT * FROM employees ORDER BY [Name of the Employee]")
+            employees = [row_to_dict(cursor, row) for row in cursor.fetchall()]
+
+            cursor.execute("SELECT holiday_date FROM holidays WHERE YEAR(holiday_date) = ? AND MONTH(holiday_date) = ?",
+                           year, month)
+            holidays = {h[0] for h in cursor.fetchall()}
+
+            cursor.execute(
+                "SELECT employee_code, attendance_date, status FROM attendance_log WHERE YEAR(attendance_date) = ? AND MONTH(attendance_date) = ?",
+                year, month)
+            for row in cursor.fetchall():
+                e_code, att_date, status = row
+                if e_code not in attendance_data:
+                    attendance_data[e_code] = {}
+                attendance_data[e_code][att_date] = status
+
+        except pyodbc.ProgrammingError as e:
+            if "Invalid object name 'employees'" in str(e):
+                flash("Employee table not found. Please add an employee to create it.", "info")
+            else:
+                flash(f'A database error occurred: {e}', "error")
+                traceback.print_exc()
+        except Exception as e:
+            flash(f'An unexpected error occurred: {e}', 'error')
+            traceback.print_exc()
+        finally:
+            if conn: conn.close()
+
+    cal = calendar.Calendar()
+    month_days = [d for d in cal.itermonthdates(year, month) if d.month == month]
+
+    return render_template('attendance.html',
+                           employees=employees,
+                           month_days=month_days,
+                           attendance_data=attendance_data,
+                           holidays=holidays,
+                           current_month=month,
+                           current_year=year,
+                           calendar=calendar)
+
+
+@app.route('/upload', methods=['GET', 'POST'], endpoint='upload')
+def upload_file():
+    if request.method == 'POST':
+        if 'file' not in request.files: return jsonify({'success': False, 'error': 'No file part in the request.'}), 400
+        file = request.files['file']
+        if file.filename == '': return jsonify({'success': False, 'error': 'No file selected.'}), 400
+        if not file.filename.endswith(('.xlsx', '.xls')): return jsonify(
+            {'success': False, 'error': 'Invalid file type.'}), 400
+        filepath, conn = None, None
+        try:
+            filename = secure_filename(file.filename)
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            file.save(filepath)
+            conn = get_db_connection()
+            if not conn: raise ConnectionError("Database connection failed.")
+            cursor = conn.cursor()
+            df_master = pd.read_excel(filepath, sheet_name=0)
+            replace_table_with_df(df_master, 'master', cursor)
+            conn.commit()
+            flash('Master data uploaded successfully!', 'success')
+            return jsonify({'success': True, 'message': 'File processed.'})
+        except Exception as e:
+            if conn: conn.rollback()
+            traceback.print_exc()
+            return jsonify({'success': False, 'error': f"An unexpected error occurred: {e}"}), 500
+        finally:
+            if conn: conn.close()
+            if filepath and os.path.exists(filepath): os.remove(filepath)
+    conn = get_db_connection()
+    table_exists = False
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'master'")
+            if cursor.fetchone(): table_exists = True
+        except:
+            pass
+        finally:
+            conn.close()
+    return render_template('upload.html', table_exists=table_exists)
+
+
+# ACTION ROUTES
+
+@app.route('/generate_plan', methods=['POST'], endpoint='generate_plan')
+def generate_plan():
+    conn = get_db_connection()
+    if not conn:
+        flash('Database connection failed.', 'error')
+        return redirect(url_for('production_planning'))
+
+    try:
+        sql_query = """
+        SELECT
+            m.[Item code ], m.[Description], m.[Model], m.[Category], m.[Type],
+            m.[RPL days to Delivery], m.[Modified Release plan],
+            CAST(
+                CASE WHEN cp.CalculatedPlan > 0 THEN cp.CalculatedPlan ELSE 0 END
+            AS INT) AS [Daily Suggested Release Plan]
+        FROM dbo.master m
+        CROSS APPLY (
+            SELECT MIN(v) AS CalculatedPlan
+            FROM (VALUES
+                (m.[Max Inv] - m.[Total Inv] + m.[Pending]),
+                (m.[Max Inv] - m.[Total Inv]),
+                (m.[Daily Max Plan])
+            ) AS value_table(v)
+        ) AS cp
+        """
+        plan_df = pd.read_sql_query(sql_query, conn)
+
+        prioritized_df = prioritize_plan_with_ahp(plan_df)
+
+        cursor = conn.cursor()
+
+        for _, row in prioritized_df.iterrows():
+            item_code = row['Item code ']
+            suggested_plan = row['Daily Suggested Release Plan']
+            update_sql = "UPDATE master SET [Daily Suggested Release Plan] = ? WHERE [Item code ] = ?"
+            cursor.execute(update_sql, suggested_plan, item_code)
+
+        columns_to_drop = ['type_score', 'rpl_score', 'category_score', 'qty_score']
+        prioritized_df.drop(columns=columns_to_drop, inplace=True, errors='ignore')
+        replace_table_with_df(prioritized_df, 'Production_pl', cursor)
+
+        conn.commit()
+        flash('Daily Production Plan has been generated, prioritized, and the master table has been updated!',
+              'success')
+
+    except Exception as e:
+        flash(f'An error occurred during plan generation: {e}', 'error')
+        traceback.print_exc()
+    finally:
+        if conn: conn.close()
+
+    return redirect(url_for('production_planning'))
+
+
+@app.route('/attendance/mark', methods=['POST'], endpoint='mark_attendance')
+def mark_attendance():
+    conn = get_db_connection()
+    current_year = request.form.get('current_year')
+    current_month = request.form.get('current_month')
+
+    if not conn:
+        flash('Database connection failed.', 'error')
+        return redirect(url_for('attendance', year=current_year, month=current_month))
+
+    try:
+        cursor = conn.cursor()
+        for key, value in request.form.items():
+            if key.startswith('status-'):
+                _, e_code, date_str = key.split('-')
+                if value:
+                    upsert_sql = """
+                    MERGE attendance_log AS target
+                    USING (SELECT ? AS employee_code, ? AS attendance_date, ? AS status) AS source
+                    ON (target.employee_code = source.employee_code AND target.attendance_date = source.attendance_date)
+                    WHEN MATCHED THEN
+                        UPDATE SET status = source.status
+                    WHEN NOT MATCHED THEN
+                        INSERT (employee_code, attendance_date, status)
+                        VALUES (source.employee_code, source.attendance_date, source.status);
+                    """
+                    cursor.execute(upsert_sql, e_code, date_str, value)
+        conn.commit()
+        flash('Attendance has been saved successfully!', 'success')
+    except Exception as e:
+        flash(f'An error occurred while saving attendance: {e}', 'error')
+        traceback.print_exc()
+    finally:
+        if conn: conn.close()
+
+    return redirect(url_for('attendance', year=current_year, month=current_month))
+
+
+@app.route('/attendance/holiday', methods=['POST'], endpoint='add_holiday')
+def add_holiday():
+    holiday_date_str = request.form.get('holiday_date')
+    description = request.form.get('description', '')
+    current_year = request.form.get('current_year')
+    current_month = request.form.get('current_month')
+
+    conn = get_db_connection()
+    if not conn:
+        flash('Database connection failed.', 'error')
+        return redirect(url_for('attendance', year=current_year, month=current_month))
+
+    try:
+        cursor = conn.cursor()
+        sql = "IF NOT EXISTS (SELECT 1 FROM holidays WHERE holiday_date = ?) INSERT INTO holidays (holiday_date, description) VALUES (?, ?)"
+        cursor.execute(sql, holiday_date_str, holiday_date_str, description)
+        conn.commit()
+        flash(f'Holiday on {holiday_date_str} added successfully.', 'success')
+    except Exception as e:
+        flash(f'An error occurred while adding holiday: {e}', 'error')
+        traceback.print_exc()
+    finally:
+        if conn: conn.close()
+
+    return redirect(url_for('attendance', year=current_year, month=current_month))
+
+
+@app.route('/attendance/export', methods=['GET'], endpoint='export_attendance')
+def export_attendance():
+    conn = get_db_connection()
+    year = request.args.get('year', datetime.now().year, type=int)
+    month = request.args.get('month', datetime.now().month, type=int)
+
+    if not conn:
+        flash('Database connection failed.', 'error')
+        return redirect(url_for('attendance', year=year, month=month))
+
+    try:
+        sql_employees = "SELECT [E.code], [Name of the Employee] FROM employees ORDER BY [Name of the Employee]"
+        df_employees = pd.read_sql(sql_employees, conn)
+
+        sql_log = "SELECT employee_code, attendance_date, status FROM attendance_log WHERE YEAR(attendance_date) = ? AND MONTH(attendance_date) = ?"
+        df_log = pd.read_sql(sql_log, conn, params=(year, month))
+
+        df_pivot = df_log.pivot(index='employee_code', columns='attendance_date', values='status').reset_index()
+
+        df_report = pd.merge(df_employees, df_pivot, left_on='E.code', right_on='employee_code', how='left')
+        df_report.drop(columns=['employee_code'], inplace=True, errors='ignore')
+
+        output = io.BytesIO()
+        writer = pd.ExcelWriter(output, engine='openpyxl')
+        df_report.to_excel(writer, index=False, sheet_name='Attendance')
+        writer.close()
+        output.seek(0)
+
+        return send_file(output,
+                         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                         as_attachment=True,
+                         download_name=f'attendance_{year}_{month:02d}.xlsx')
+
+    except Exception as e:
+        flash(f"Error exporting data: {e}", "error")
+        return redirect(url_for('attendance', year=year, month=month))
+    finally:
+        if conn: conn.close()
+
+
+@app.route('/add_employee', methods=['POST'], endpoint='add_employee')
+def add_employee():
+    e_code = request.form.get('e_code')
+    name = request.form.get('name')
+    company = request.form.get('company')
+    doj_str = request.form.get('doj')
+    stage = request.form.get('stage')
+    doj_date = datetime.strptime(doj_str, '%Y-%m-%d')
+    conn = get_db_connection()
+    if not conn:
+        flash('Database connection failed.', 'error')
+        return redirect(url_for('attendance'))
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT [E.code] FROM employees WHERE [E.code] = ?", e_code)
+        if cursor.fetchone():
+            flash(f'Error: Employee with E.code "{e_code}" already exists.', 'error')
+            return redirect(url_for('attendance'))
+        sql_insert = "INSERT INTO employees ([E.code], [Name of the Employee], [Company / Contract], [Stage], [DOJ]) VALUES (?, ?, ?, ?, ?)"
+        params = (e_code, name, company, stage, doj_date)
+        cursor.execute(sql_insert, params)
+        conn.commit()
+        flash(f'Successfully added employee: {name}', 'success')
+    except pyodbc.ProgrammingError as e:
+        if "Invalid object name 'employees'" in str(e):
+            flash("Employee table does not exist. It will be created now.", "info")
+            create_and_insert_employee(e_code, name, company, stage, doj_date)
+        else:
+            flash(f'A database error occurred: {e}', 'error')
+    except Exception as e:
+        flash(f'An unexpected error occurred: {e}', 'error')
+        traceback.print_exc()
+    finally:
+        if conn: conn.close()
+    return redirect(url_for('attendance'))
+
+
+@app.route('/remove_employee', methods=['POST'], endpoint='remove_employee')
+def remove_employee():
+    e_code = request.form.get('e_code')
+    conn = get_db_connection()
+    if not conn:
+        flash('Database connection failed.', 'error')
+        return redirect(url_for('attendance'))
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM employees WHERE [E.code] = ?", e_code)
+        conn.commit()
+        if cursor.rowcount > 0:
+            flash(f'Employee with E.code "{e_code}" has been removed.', 'success')
+        else:
+            flash(f'Could not find employee with E.code "{e_code}".', 'error')
+    except Exception as e:
+        flash(f'An error occurred while removing the employee: {e}', 'error')
+        traceback.print_exc()
+    finally:
+        if conn: conn.close()
+    return redirect(url_for('attendance'))
+
+
+def create_and_insert_employee(e_code, name, company, stage, doj_date):
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        # This will now create the 'employees' table with a PRIMARY KEY
+        create_table_sql = """
+        CREATE TABLE employees (
+            [E.code] NVARCHAR(50) PRIMARY KEY,
+            [Name of the Employee] NVARCHAR(255),
+            [Company / Contract] NVARCHAR(255),
+            [DOJ] DATETIME,
+            [Stage] NVARCHAR(255)
+        );
+        """
+        cursor.execute(create_table_sql)
+        sql_insert = "INSERT INTO employees ([E.code], [Name of the Employee], [Company / Contract], [Stage], [DOJ]) VALUES (?, ?, ?, ?, ?)"
+        params = (e_code, name, company, stage, doj_date)
+        cursor.execute(sql_insert, params)
+        conn.commit()
+        flash(f'Employees table created and first employee ({name}) added!', 'success')
+    except Exception as e:
+        flash(f'Failed to create table and add employee: {e}', 'error')
+        traceback.print_exc()
+    finally:
+        if conn: conn.close()
+
+
+@app.route('/upload_pending', methods=['POST'], endpoint='upload_pending_csv')
+def upload_pending_csv():
+    if 'file' not in request.files or request.files['file'].filename == '':
+        flash('No file selected. Please choose a CSV file.', 'error')
+        return redirect(url_for('upload'))
+    file = request.files['file']
+    if not file.filename.endswith('.csv'):
+        flash('Invalid file type. Please upload a .csv file.', 'error')
+        return redirect(url_for('upload'))
+    filepath, conn = None, None
+    try:
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
+        df_pending = pd.read_csv(filepath)
+        df_pending.columns = [col.strip() for col in df_pending.columns]
+        if 'ITEM CODE' not in df_pending.columns or 'QTY' not in df_pending.columns:
+            flash('CSV file must contain "ITEM CODE" and "QTY" columns.', 'error')
+            raise ValueError("Missing required columns in CSV")
+        df_pending['ITEM CODE'] = df_pending['ITEM CODE'].astype(str).str.strip().str.lstrip("'")
+        pending_updates = df_pending.groupby('ITEM CODE')['QTY'].sum().reset_index()
+        conn = get_db_connection()
+        if not conn: raise ConnectionError("Database connection failed.")
+        cursor = conn.cursor()
+        update_count = 0
+        for _, row in pending_updates.iterrows():
+            item_code = row['ITEM CODE']
+            total_qty = row['QTY']
+            update_sql = "UPDATE master SET [Pending] = ? WHERE [Item code ] = ?"
+            cursor.execute(update_sql, int(total_qty), str(item_code))
+            update_count += cursor.rowcount
+        conn.commit()
+        flash(f'Successfully updated pending quantities for {update_count} item(s).', 'success')
+    except Exception as e:
+        if conn: conn.rollback()
+        flash(f'An error occurred: {e}', 'error')
+        traceback.print_exc()
+    finally:
+        if conn: conn.close()
+        if filepath and os.path.exists(filepath): os.remove(filepath)
+    return redirect(url_for('upload'))
+
+
+@app.route('/delete_master', methods=['POST'], endpoint='delete_master_data')
+def delete_master_data():
+    conn = get_db_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("IF OBJECT_ID('dbo.master', 'U') IS NOT NULL DROP TABLE dbo.master")
+            conn.commit()
+            flash("Master data and table have been successfully deleted.", "success")
+        except Exception as e:
+            flash(f"An error occurred while deleting the table: {e}", "error")
+        finally:
+            conn.close()
+    else:
+        flash("Could not connect to the database.", "error")
+    return redirect(url_for('upload'))
+
+
+@app.route('/update_plan', methods=['POST'], endpoint='update_plan')
+def update_plan():
+    flash('"Save Changes" button is not implemented yet.', 'info')
+    return redirect(url_for('production_planning'))
+
+======================================================================
+== FILE: templates\layout.html
+======================================================================
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Production Dashboard{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <nav class="top-nav">
+        <div class="nav-header">
+            <img src="{{ url_for('static', filename='images/ELGI.png') }}" alt="ELGI Logo" class="logo-img">
+        </div>
+        <ul class="nav-links">
+            <li><a href="{{ url_for('production_planning') }}">Production Planning</a></li>
+            <li><a href="{{ url_for('wip_tracking') }}">WIP Tracker</a></li>
+            <li><a href="{{ url_for('attendance') }}">Worker Attendance</a></li>
+            <li><a href="{{ url_for('upload') }}">Upload Data</a></li>
+        </ul>
+    </nav>
+
+    <main class="main-content">
+        {% block content %}{% endblock %}
+    </main>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>
+
+======================================================================
+== FILE: templates\productionpl.html
+======================================================================
+
+{% extends "layout.html" %}
+
+{% block title %}Production Planning{% endblock %}
+
+{% block content %}
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            <div class="flash-messages">
+            {% for category, message in messages %}
+                <div class="flash {{ category }}">{{ message }}</div>
+            {% endfor %}
+            </div>
+        {% endif %}
+    {% endwith %}
+
+    <div class="header">
+        <h1>Daily Production Plan</h1>
+        <div class="actions">
+            <form action="{{ url_for('generate_plan') }}" method="POST" style="display: inline;">
+                <button type="submit" class="button">Generate & Prioritize Plan</button>
+            </form>
+        </div>
+    </div>
+
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>S.No.</th>
+                    <th>Item Code</th>
+                    <th>Description</th>
+                    <th>Model</th>
+                    <th>Category</th>
+                    <th>Suggested Plan</th>
+                    <th>Priority Weight</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for plan in plans %}
+                <tr>
+                    <td>{{ loop.index }}</td>
+                    <td>{{ plan['Item code '] }}</td>
+                    <td>{{ plan['Description'] }}</td>
+                    <td>{{ plan['Model'] }}</td>
+                    <td>{{ plan['Category'] }}</td>
+                    <td>{{ plan['Daily Suggested Release Plan'] }}</td>
+                    <td>{{ "%.4f"|format(plan['priority_weight']) }}</td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="7" class="placeholder">No production plan data found. Click 'Generate' to create one.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+{% endblock %}
+
+======================================================================
+== FILE: templates\wip.html
+======================================================================
+
+{% extends "layout.html" %}
+
+{% block title %}WIP Overview{% endblock %}
+
+{% block content %}
+    <div class="header">
+        <h1>WIP Master Overview</h1>
+    </div>
+
+    <p>This is a high-level overview of all items and their total inventory across all production stages.</p>
+
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>Item Code</th>
+                    <th>Description</th>
+                    <th>Total Inventory</th>
+                    <th>FG</th>
+                    <th>PDI</th>
+                    <th>Powder Coating</th>
+                    <th>Hydro Testing</th>
+                    <th>Full Welding</th>
+                    <th>Part Assembly</th>
+                    <th>Cirseam Welding</th>
+                    <th>Dish fit up</th>
+                    <th>Long Seam</th>
+                    <th>Live Dispatch Status</th>
+                    <th>Monthly Dispatch Qty</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in master_items %}
+                <tr>
+                    <td>{{ item['Item code'] }}</td>
+                    <td>{{ item['Description'] }}</td>
+                    <td>{{ item['Total inventory'] }}</td>
+                    <td>{{ item['FG'] }}</td>
+                    <td>{{ item['PDI'] }}</td>
+                    <td>{{ item['Powder coating'] }}</td>
+                    <td>{{ item['Hydro Testing'] }}</td>
+                    <td>{{ item['Full welding'] }}</td>
+                    <td>{{ item['Part assembly'] }}</td>
+                    <td>{{ item['Cirseam welding'] }}</td>
+                    <td>{{ item['Dish fit up'] }}</td>
+                    <td>{{ item['Long seam'] }}</td>
+                    <td>{{ item['Live Dispatch Status'] }}</td>
+                    <td>{{ item['Monthly Dispatch Qty'] }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="14" class="placeholder">No master data found. Please go to the 'Upload Data' page to upload the master Excel file.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+{% endblock %}
+
+======================================================================
+== FILE: templates\attendance.html
+======================================================================
+
+{% extends "layout.html" %}
+
+{% block title %}Daily Attendance Tracker{% endblock %}
+
+{% block content %}
+<style>
+    .attendance-grid th, .attendance-grid td {
+        text-align: center;
+        min-width: 50px;
+        padding: 6px 4px;
+        vertical-align: middle;
+    }
+    .attendance-grid th.day-header {
+        font-weight: normal;
+        font-size: 12px;
+        writing-mode: vertical-rl;
+        transform: rotate(180deg);
+        white-space: nowrap;
+    }
+    .attendance-grid td.employee-name {
+        text-align: left;
+        font-weight: 500;
+        min-width: 150px;
+        white-space: nowrap;
+    }
+    .weekend {
+        background-color: #f5f5f5;
+        color: #999;
+    }
+    .holiday {
+        background-color: #dbeafe;
+        color: #1e40af;
+        font-weight: bold;
+    }
+    .attendance-select {
+        width: 100%;
+        min-width: 45px;
+        padding: 4px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        background-color: #fff;
+    }
+    .attendance-select.present { background-color: #dcfce7; }
+    .attendance-select.absent { background-color: #fee2e2; }
+    .controls-container {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 20px;
+        flex-wrap: wrap;
+        gap: 20px;
+    }
+    .month-nav { display: flex; align-items: center; gap: 10px; }
+    .add-form {
+        margin-bottom: 30px;
+        padding: 20px;
+        background-color: #f8f9fa;
+        border-radius: 8px;
+        border: 1px solid #dee2e6;
+    }
+    .form-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 15px;
+    }
+</style>
+
+<div class="header">
+    <h1>Daily Attendance Tracker</h1>
+    <div class="actions">
+        <a href="{{ url_for('export_attendance', year=current_year, month=current_month) }}" class="button">Export to Excel</a>
+    </div>
+</div>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+        <div class="flash-messages">
+        {% for category, message in messages %}
+            <div class="flash {{ category }}">{{ message }}</div>
+        {% endfor %}
+        </div>
+    {% endif %}
+{% endwith %}
+
+<div class="controls-container add-form">
+    <div class="month-nav">
+        <a href="{{ url_for('attendance', year=current_year if current_month > 1 else current_year-1, month=current_month-1 if current_month > 1 else 12) }}" class="button">&lt; Prev</a>
+        <h3>{{ calendar.month_name[current_month] }} {{ current_year }}</h3>
+        <a href="{{ url_for('attendance', year=current_year if current_month < 12 else current_year+1, month=current_month+1 if current_month < 12 else 1) }}" class="button">Next &gt;</a>
+    </div>
+    <form action="{{ url_for('add_holiday') }}" method="POST" class="form-inline" style="display: flex; gap: 10px; align-items:center;">
+        <input type="hidden" name="current_year" value="{{ current_year }}">
+        <input type="hidden" name="current_month" value="{{ current_month }}">
+        <div>
+            <label for="holiday_date" style="display:block; margin-bottom:5px;">Add Holiday:</label>
+            <input type="date" id="holiday_date" name="holiday_date" required>
+        </div>
+        <div>
+            <label for="description" style="display:block; margin-bottom:5px;">Description:</label>
+            <input type="text" id="description" name="description" placeholder="e.g., National Holiday">
+        </div>
+        <button type="submit" class="button" style="align-self: flex-end;">Mark Holiday</button>
+    </form>
+</div>
+
+<form action="{{ url_for('mark_attendance') }}" method="POST">
+    <input type="hidden" name="current_year" value="{{ current_year }}">
+    <input type="hidden" name="current_month" value="{{ current_month }}">
+    <div class="table-container">
+        <table class="attendance-grid">
+            <thead>
+                <tr>
+                    <th style="text-align:left;">Employee Name</th>
+                    {% for day in month_days %}
+                        {% set is_weekend = day.weekday() >= 5 %}
+                        {% set is_holiday = day in holidays %}
+                        <th class="day-header {% if is_weekend %}weekend{% endif %} {% if is_holiday %}holiday{% endif %}">
+                            <span>{{ day.strftime('%a') }}<br>{{ day.day }}</span>
+                        </th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for employee in employees %}
+                <tr>
+                    <td class="employee-name">{{ employee['Name of the Employee'] }}</td>
+                    {% for day in month_days %}
+                        {% set is_weekend = day.weekday() >= 5 %}
+                        {% set is_holiday = day in holidays %}
+                        {% set status = attendance_data.get(employee['E.code'], {}).get(day) %}
+                        <td class="{% if is_weekend %}weekend{% endif %} {% if is_holiday %}holiday{% endif %}">
+                            {% if not is_weekend and not is_holiday %}
+                                <select name="status-{{ employee['E.code'] }}-{{ day.strftime('%Y-%m-%d') }}" class="attendance-select {% if status == 'Present' %}present{% elif status == 'Absent' %}absent{% endif %}">
+                                    <option value="" {% if not status %}selected{% endif %}>--</option>
+                                    <option value="Present" {% if status == 'Present' %}selected{% endif %}>P</option>
+                                    <option value="Absent" {% if status == 'Absent' %}selected{% endif %}>A</option>
+                                </select>
+                            {% endif %}
+                        </td>
+                    {% endfor %}
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="{{ month_days|length + 1 }}" class="placeholder">No employees found. Please add an employee below.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <div class="form-actions">
+        <button type="submit" class="button save-button">Save Attendance</button>
+    </div>
+</form>
+
+<div class="add-form" style="margin-top: 40px;">
+    <h3>Manage Employees</h3>
+    <p>Add new employees to the master list. To remove an employee, use the button in the main list below.</p>
+    <form action="{{ url_for('add_employee') }}" method="POST">
+        <div class="form-grid">
+            <div>
+                <label for="e_code">E.code (Unique)</label>
+                <input type="text" id="e_code" name="e_code" required>
+            </div>
+            <div>
+                <label for="name">Name of the Employee</label>
+                <input type="text" id="name" name="name" required>
+            </div>
+            <div>
+                <label for="company">Company / Contract</label>
+                <input type="text" id="company" name="company" required>
+            </div>
+            <div>
+                <label for="doj">Date of Joining (DOJ)</label>
+                <input type="date" id="doj" name="doj" required>
+            </div>
+            <div>
+                <label for="stage">Stage</label>
+                <input type="text" id="stage" name="stage" required>
+            </div>
+        </div>
+        <div class="form-actions">
+            <button type="submit" class="button">Add Employee</button>
+        </div>
+    </form>
+
+    <div class="table-container" style="margin-top:20px;">
+        <table>
+            <thead>
+                <tr>
+                    <th>E.code</th>
+                    <th>Name</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for employee in employees %}
+                <tr>
+                    <td>{{ employee['E.code'] }}</td>
+                    <td>{{ employee['Name of the Employee'] }}</td>
+                    <td>
+                        <form action="{{ url_for('remove_employee') }}" method="POST" onsubmit="return confirm('Are you sure you want to remove this employee? This will delete all their attendance records.');">
+                            <input type="hidden" name="e_code" value="{{ employee['E.code'] }}">
+                            <button type="submit" class="remove-button">Remove</button>
+                        </form>
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="3" class="placeholder">No employees found.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+{% endblock %}
+
+======================================================================
+== FILE: templates\upload.html
+======================================================================
+
+{% extends "layout.html" %}
+
+{% block title %}Upload Data{% endblock %}
+
+{% block content %}
+<style>
+    #drop-zone { border: 2px dashed #ccc; border-radius: 8px; padding: 50px; text-align: center; color: #666; font-size: 1.1rem; transition: border-color 0.3s, background-color 0.3s; cursor: pointer; margin-top: 20px; }
+    #drop-zone.dragover { border-color: #007bff; background-color: #f0f8ff; }
+    #drop-zone p { margin: 0; }
+    #file-input { display: none; }
+    #upload-status { margin-top: 20px; text-align: center; }
+    .status-message { padding: 15px; border-radius: 5px; display: none; }
+    .status-message.success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+    .status-message.error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+    .loader { border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 20px auto; display: none; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    .delete-button { background-color: #dc3545; }
+    .delete-button:hover { background-color: #c82333; }
+    .status-box { padding: 20px; margin-top: 20px; border-radius: 8px; text-align: center; }
+    .status-box.success { background-color: #d4edda; border: 1px solid #c3e6cb; }
+    .upload-section { margin-bottom: 30px; padding-bottom: 20px; border-bottom: 1px solid #dee2e6; }
+</style>
+
+<div class="header">
+    <h1>Manage Database</h1>
+</div>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+        <div class="flash-messages">
+        {% for category, message in messages %}
+            <div class="flash {{ category }}">{{ message }}</div>
+        {% endfor %}
+        </div>
+    {% endif %}
+{% endwith %}
+
+<div class="upload-section">
+    <h2>Master Excel File</h2>
+    {% if table_exists %}
+        {# This block shows if the 'master' table is already in the database #}
+        <div class="status-box success">
+            <h3>✅ Master Data is Uploaded</h3>
+            <p>The 'master' table is present in the database. To upload a new file, you must first delete the existing data.</p>
+            <form action="{{ url_for('delete_master_data') }}" method="POST" onsubmit="return confirm('Are you sure you want to permanently delete all master data?');" style="margin-top: 20px;">
+                 <button type="submit" class="button delete-button">Delete All Master Data</button>
+            </form>
+        </div>
+    {% else %}
+        {# This block shows if the 'master' table does NOT exist #}
+        <p>Drag and drop your Excel file (.xlsx) to create the 'master' table in the database.</p>
+        <div id="drop-zone">
+            <p>Drag & Drop Excel File Here</p>
+            <p>or</p>
+            <p><strong>Click to Select File</strong></p>
+        </div>
+        <input type="file" id="file-input" accept=".xlsx, .xls">
+        <div id="upload-status">
+            <div id="loader" class="loader"></div>
+            <div id="status-message" class="status-message"></div>
+        </div>
+    {% endif %}
+</div>
+
+
+{% if table_exists %}
+    {# This new section only appears if the master table exists #}
+    <div class="upload-section">
+        <h2>Update Pending Quantities</h2>
+        <p>Upload a CSV file with columns "ITEM CODE" and "QTY" to update the 'Pending' column in the master data.</p>
+        <form action="{{ url_for('upload_pending_csv') }}" method="POST" enctype="multipart/form-data">
+            <input type="file" name="file" accept=".csv" required>
+            <button type="submit" class="button" style="margin-left: 10px;">Upload Pending CSV</button>
+        </form>
+    </div>
+{% endif %}
+
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const dropZone = document.getElementById('drop-zone');
+    if (!dropZone) return; // Stop the script if the drop zone isn't on the page
+
+    const fileInput = document.getElementById('file-input');
+    const loader = document.getElementById('loader');
+    const statusMessage = document.getElementById('status-message');
+
+    dropZone.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', (e) => { if (e.target.files.length > 0) handleFiles(e.target.files); });
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => dropZone.addEventListener(eventName, preventDefaults, false));
+    function preventDefaults(e) { e.preventDefault(); e.stopPropagation(); }
+    ['dragenter', 'dragover'].forEach(eventName => dropZone.addEventListener(eventName, () => dropZone.classList.add('dragover'), false));
+    ['dragleave', 'drop'].forEach(eventName => dropZone.addEventListener(eventName, () => dropZone.classList.remove('dragover'), false));
+    dropZone.addEventListener('drop', (e) => { handleFiles(e.dataTransfer.files); }, false);
+
+    function handleFiles(files) {
+        const file = files[0];
+        if (!file.name.endsWith('.xlsx') && !file.name.endsWith('.xls')) {
+            displayStatus('Invalid file type. Please upload an Excel file.', 'error');
+            return;
+        }
+        uploadFile(file);
+    }
+
+    function uploadFile(file) {
+        loader.style.display = 'block';
+        statusMessage.style.display = 'none';
+        dropZone.style.pointerEvents = 'none';
+        const formData = new FormData();
+        formData.append('file', file);
+
+        fetch("{{ url_for('upload') }}", { method: 'POST', body: formData })
+        .then(response => {
+            if (!response.ok) {
+                return response.json().then(err => { throw new Error(err.error || 'Server error.') });
+            }
+            return response.json();
+        })
+        .then(result => {
+            if (result.success) {
+                window.location.reload();
+            } else {
+                displayStatus(`Error: ${result.error}`, 'error');
+            }
+        })
+        .catch(error => {
+            console.error('Upload Error:', error);
+            displayStatus(error.message || 'An unexpected network error occurred.', 'error');
+        })
+        .finally(() => {
+            loader.style.display = 'none';
+            dropZone.style.pointerEvents = 'auto';
+            fileInput.value = '';
+        });
+    }
+
+    function displayStatus(message, type) {
+        statusMessage.textContent = message;
+        statusMessage.className = `status-message ${type}`;
+        statusMessage.style.display = 'block';
+    }
+});
+</script>
+{% endblock %}
+
+======================================================================
+== FILE: static\css\style.css
+======================================================================
+
+/* --- Google Font Import --- */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+/* --- CSS Variables --- */
+:root {
+    --nav-bg: #1a222d;
+    --nav-text: #adb5bd;
+    --nav-header: #ffffff;
+    --nav-hover-bg: #343a40;
+    --nav-hover-text: #ffffff;
+    --main-bg: #f8f9fa;
+    --content-bg: #ffffff;
+    --text-primary: #212529;
+    --text-secondary: #6c757d;
+    --border-color: #dee2e6;
+    --accent-color: #007bff;
+    --accent-color-hover: #0056b3;
+    --success-bg: #d4edda;
+    --success-text: #155724;
+    --error-bg: #f8d7da;
+    --error-text: #721c24;
+}
+
+/* --- General Body Styling --- */
+body {
+    margin: 0;
+    font-family: 'Inter', sans-serif;
+    background-color: var(--main-bg);
+    color: var(--text-primary);
+}
+
+/* --- Horizontal Top Navigation Bar --- */
+.top-nav {
+    display: flex;
+    align-items: center;
+    background-color: var(--nav-bg);
+    color: var(--nav-text);
+    padding: 0 30px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    position: sticky;
+    top: 0;
+    z-index: 1000;
+}
+
+.nav-header {
+    padding: 10px 0; /* Adjusted padding for image */
+}
+
+/* NEW: Style for the logo image */
+.logo-img {
+    height: 25px; /* Controls the height of the logo */
+    width: auto;  /* Maintains the aspect ratio */
+    display: block; /* Removes any extra space below the image */
+}
+
+.nav-links {
+    display: flex;
+    list-style-type: none;
+    margin: 0 0 0 40px;
+    padding: 0;
+}
+
+.nav-links li a {
+    display: block;
+    color: var(--nav-text);
+    text-decoration: none;
+    padding: 20px 15px;
+    font-weight: 500;
+    transition: background-color 0.2s, color 0.2s;
+}
+
+.nav-links li a:hover {
+    background-color: var(--nav-hover-bg);
+    color: var(--nav-hover-text);
+}
+
+/* --- Main Content Area --- */
+.main-content {
+    padding: 30px;
+}
+
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    padding-bottom: 15px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.header h1 {
+    margin: 0;
+}
+
+/* --- Tables (Adjusted to prevent horizontal scrolling) --- */
+.table-container {
+    background-color: var(--content-bg);
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    overflow-x: auto; /* Fallback for very extreme cases */
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed; /* Helps distribute column width more evenly */
+}
+
+th, td {
+    padding: 12px 10px; /* Reduced horizontal padding */
+    text-align: left;
+    border-bottom: 1px solid var(--border-color);
+    word-wrap: break-word; /* Allow long words to break and wrap */
+    font-size: 14px; /* Slightly smaller font for more space */
+}
+
+thead th {
+    background-color: #f8f9fa;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+tbody tr:nth-child(even) {
+    background-color: #f8f9fa;
+}
+
+tbody tr:hover {
+    background-color: #e9ecef;
+}
+
+td.placeholder {
+    text-align: center;
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+/* --- Buttons & Forms --- */
+.button {
+    background-color: var(--accent-color);
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 5px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.button:hover {
+    background-color: var(--accent-color-hover);
+}
+
+.button-small {
+    padding: 4px 8px;
+    font-size: 12px;
+    margin-top: 2px;
+}
+
+.save-button {
+    background-color: #28a745;
+}
+.save-button:hover {
+    background-color: #218838;
+}
+
+.form-actions {
+    margin-top: 20px;
+    text-align: right;
+}
+
+input[type="number"], input[type="search"], select {
+    padding: 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+}
+
+.plan-input {
+    width: 100px;
+}
+
+.search-container {
+    margin-bottom: 15px;
+}
+#wip-search {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+/* --- Modals --- */
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 1001; /* Should be higher than sticky nav */
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+    background-color: rgba(0,0,0,0.5);
+    backdrop-filter: blur(2px);
+}
+.modal-content {
+    background-color: #fefefe;
+    margin: 15% auto;
+    padding: 20px 30px;
+    border: 1px solid #888;
+    width: 80%;
+    max-width: 450px;
+    border-radius: 8px;
+    box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+}
+.close-button {
+    color: #aaa;
+    float: right;
+    font-size: 28px;
+    font-weight: bold;
+    cursor: pointer;
+}
+#move-form label, #deliver-form label {
+    display: block;
+    margin-top: 15px;
+    font-weight: 500;
+}
+#move-form select, #move-form input, #deliver-form input {
+    width: 100%;
+    margin-top: 5px;
+    box-sizing: border-box;
+}
+#move-form button, #deliver-form button {
+    margin-top: 20px;
+    width: 100%;
+}
+
+/* --- Flash Messages --- */
+.flash-messages {
+    margin-bottom: 15px;
+}
+.flash {
+    padding: 15px;
+    border-radius: 5px;
+    border: 1px solid transparent;
+}
+.flash.success {
+    background-color: var(--success-bg);
+    color: var(--success-text);
+    border-color: #c3e6cb;
+}
+.flash.error {
+    background-color: var(--error-bg);
+    color: var(--error-text);
+    border-color: #f5c6cb;
+}
+
+
+
+======================================================================
+== FILE: static\images\ELGI.png
+======================================================================
+
+[Binary content of the image file, not displayed]
+
+

@@ -1,0 +1,9 @@
+# Flask Web Framework
+Flask==3.0.3
+
+# SQL Server Driver
+pyodbc==5.1.0
+
+# For reading and processing Excel files
+pandas==2.2.2
+openpyxl==3.1.2

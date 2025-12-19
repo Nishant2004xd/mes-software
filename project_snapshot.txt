@@ -1,0 +1,1528 @@
+
+======================================================================
+== FILE: config.py
+======================================================================
+
+# config.py
+
+class Config:
+    """
+    Configuration class for the Flask application.
+    Stores database connection details and other settings.
+    """
+    SECRET_KEY = 'nishant'  # Change this to your own random string
+    # --- DATABASE CONFIGURATION ---
+
+    # The name of your SQL Server instance.
+    # This is the value you use to connect in SQL Server Management Studio.
+    SERVER = 'DESKTOP-29MHU7D\\MSSQLSERVER01'
+
+    # The name of the specific database you want to connect to.
+    DATABASE = 'ELGI_Dash'
+
+    # The ODBC driver for SQL Server.
+    # 'ODBC Driver 17 for SQL Server' is a common modern choice.
+    # Ensure this driver is installed on the machine running the application.
+    DRIVER = '{ODBC Driver 17 for SQL Server}'
+
+    # Since we are using Windows Authentication (Integrated Security),
+    # a username and password are not required in this file.
+    # The connection string will specify 'Trusted_Connection=yes'.
+
+
+======================================================================
+== FILE: requirements.txt
+======================================================================
+
+# Flask Web Framework
+Flask==3.0.3
+
+# SQL Server Driver
+pyodbc==5.1.0
+
+# For reading and processing Excel files
+pandas==2.2.2
+openpyxl==3.1.2
+
+======================================================================
+== FILE: app\database.py
+======================================================================
+
+import pyodbc
+from config import Config
+
+
+def get_db_connection():
+    """
+    Establishes a connection to the SQL Server database.
+
+    Uses the configuration details from the Config class and sets up
+    a trusted connection (Windows Authentication).
+
+    Returns:
+        pyodbc.Connection: A database connection object if successful.
+        None: If the connection fails.
+    """
+    try:
+        # Construct the connection string using details from the Config class.
+        # This string tells the pyodbc library how to connect to the database.
+        # - DRIVER: Specifies which database driver to use.
+        # - SERVER: The name of the server instance.
+        # - DATABASE: The specific database to connect to.
+        # - Trusted_Connection=yes: This is key for Windows Authentication.
+        #   It tells SQL Server to use the current user's Windows credentials
+        #   to log in, so no username or password is needed.
+        connection_string = (
+            f"DRIVER={Config.DRIVER};"
+            f"SERVER={Config.SERVER};"
+            f"DATABASE={Config.DATABASE};"
+            f"Trusted_Connection=yes;"
+        )
+
+        #
+
+        # Attempt to establish the database connection.
+        conn = pyodbc.connect(connection_string)
+
+        print("Database connection successful!")
+        return conn
+
+    except pyodbc.Error as ex:
+        # If any error occurs during the connection attempt, pyodbc will raise
+        # an error. We catch it here to handle it gracefully.
+        sqlstate = ex.args[0]
+        print(f"ERROR: Database connection failed.")
+        print(f"SQLSTATE: {sqlstate}")
+        print(ex)
+        return None
+
+
+# --- Example of how to use this function (for testing purposes) ---
+if __name__ == '__main__':
+    # This block of code will only run when you execute `database.py` directly.
+    # It's a great way to test if the connection is working without running
+    # the entire web application.
+    print("Attempting to connect to the database...")
+    connection = get_db_connection()
+
+    if connection:
+        print("Connection test successful. Closing connection.")
+        connection.close()
+    else:
+        print("Connection test failed.")
+
+
+======================================================================
+== FILE: app\__init__.py
+======================================================================
+
+import os
+from flask import Flask
+from config import Config
+
+# --- Explicit Path Configuration ---
+# Get the absolute path of the directory where this file (__init__.py) is located.
+basedir = os.path.abspath(os.path.dirname(__file__))
+
+# Create the Flask application instance.
+# We explicitly tell Flask where the 'templates' and 'static' folders are,
+# relative to the application's root directory.
+app = Flask(__name__,
+            template_folder=os.path.join(os.path.dirname(basedir), 'templates'),
+            static_folder=os.path.join(os.path.dirname(basedir), 'static')
+            )
+
+# Apply the secret key and other configurations from config.py
+app.config.from_object(Config)
+
+# Import the routes at the bottom to prevent circular import errors.
+from app import routes
+
+======================================================================
+== FILE: app\routes.py
+======================================================================
+
+import os
+import pandas as pd
+from werkzeug.utils import secure_filename
+from flask import render_template, request, redirect, url_for, jsonify, flash
+from app import app
+from app.database import get_db_connection
+import traceback
+import numpy as np
+import pyodbc
+
+# --- App Configuration & Constants ---
+UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+STAGES = [
+    "Long seam", "Dish fit up", "Cirseam welding", "Part assembly",
+    "Full welding", "Hydro Testing", "Powder coating", "PDI", "FG"
+]
+
+
+def row_to_dict(cursor, row):
+    """
+    Converts a pyodbc row to a dictionary, cleans column names,
+    and converts NULLs in numeric columns to 0.
+    """
+    result_dict = {}
+    for i, desc in enumerate(cursor.description):
+        clean_col_name = desc[0].replace('\n', ' ').replace('\r', '').strip()
+        value = row[i]
+        col_type = desc[1]
+        is_numeric = col_type in (
+            pyodbc.SQL_INTEGER, pyodbc.SQL_BIGINT, pyodbc.SQL_SMALLINT,
+            pyodbc.SQL_TINYINT, pyodbc.SQL_DECIMAL, pyodbc.SQL_NUMERIC,
+            pyodbc.SQL_FLOAT, pyodbc.SQL_REAL
+        )
+        if value is None and is_numeric:
+            result_dict[clean_col_name] = 0
+        else:
+            result_dict[clean_col_name] = value
+    return result_dict
+
+
+# ==============================================================================
+# == PAGE RENDERING ROUTES
+# ==============================================================================
+
+@app.route('/', endpoint='production_planning')
+def production_planning():
+    conn = get_db_connection()
+    plans = []
+    if conn:
+        try:
+            cursor = conn.cursor()
+            sql_select = "SELECT * FROM Production_pl ORDER BY [Suggested release plan] DESC"
+            cursor.execute(sql_select)
+            plans = [row_to_dict(cursor, row) for row in cursor.fetchall()]
+        except pyodbc.ProgrammingError as e:
+            if "Invalid object name 'Production_pl'" in str(e):
+                flash("The Production Plan table has not been generated yet. Please generate the daily plan.", "info")
+            else:
+                flash(f"Database error: {e}", "error")
+        except Exception as e:
+            print(f"Error fetching production plan data: {e}")
+            flash('Error fetching production plan data.', 'error')
+        finally:
+            conn.close()
+    return render_template('productionpl.html', plans=plans)
+
+
+@app.route('/wip', endpoint='wip_tracking')
+def wip_tracking():
+    """
+    RESTORED: This route now fetches data for BOTH the master overview
+    and the daily tracker, then sends them to the same page.
+    """
+    conn = get_db_connection()
+    master_items, tracker_items = [], []
+    if conn:
+        try:
+            cursor = conn.cursor()
+            # Master data
+            cursor.execute("SELECT * FROM master")
+            master_items = [row_to_dict(cursor, row) for row in cursor.fetchall()]
+            # Daily tracker data
+            cursor.execute("SELECT * FROM daily_release_plan ORDER BY [Suggested Plan] DESC")
+            tracker_items = [row_to_dict(cursor, row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error fetching WIP data: {e}")
+            flash(f'Error fetching WIP data: {e}', 'error')
+        finally:
+            conn.close()
+    return render_template('wip.html', master_items=master_items, tracker_items=tracker_items)
+
+
+@app.route('/attendance', methods=['GET', 'POST'], endpoint='attendance')
+def attendance():
+    conn = get_db_connection()
+    if request.method == 'POST':
+        if conn:
+            try:
+                cursor = conn.cursor()
+                for key, value in request.form.items():
+                    if key.startswith('manpower_'):
+                        sno = int(key.split('_')[1])
+                        manpower = int(value) if value else 0
+                        cursor.execute("UPDATE shift_and_station_details SET [Manpower_present]=? WHERE SNo=?",
+                                       manpower, sno)
+                conn.commit()
+                flash('Attendance updated successfully!', 'success')
+            except Exception as e:
+                flash(f'Error updating attendance: {e}', 'error')
+            finally:
+                if conn: conn.close()
+        return redirect(url_for('attendance'))
+
+    details = []
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM shift_and_station_details")
+            details = [row_to_dict(cursor, row) for row in cursor.fetchall()]
+        finally:
+            if conn: conn.close()
+    return render_template('attendance.html', details=details)
+
+
+# ==============================================================================
+# == UPLOAD FEATURE
+# ==============================================================================
+
+def replace_table_with_df(df, table_name, cursor):
+    """Drops a table if it exists, creates it from the DataFrame, and inserts data."""
+    cursor.execute(f"IF OBJECT_ID('dbo.{table_name}', 'U') IS NOT NULL DROP TABLE dbo.{table_name}")
+    df.columns = [f"[{col.strip()}]" for col in df.columns]
+    numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
+    df[numeric_cols] = df[numeric_cols].fillna(0)
+    df = df.replace({pd.NaT: None})
+    dtype_mapping = {
+        'int64': 'INT', 'float64': 'FLOAT',
+        'datetime64[ns]': 'DATETIME', 'object': 'NVARCHAR(MAX)'
+    }
+    col_definitions = []
+    for col, dtype in df.dtypes.items():
+        sql_type = dtype_mapping.get(str(dtype), 'NVARCHAR(MAX)')
+        col_definitions.append(f"{col} {sql_type}")
+    create_table_sql = f"CREATE TABLE {table_name} ({', '.join(col_definitions)})"
+    cursor.execute(create_table_sql)
+    if df.empty: return
+    insert_sql = f"INSERT INTO {table_name} ({', '.join(df.columns)}) VALUES ({', '.join(['?' for _ in df.columns])})"
+    params = [tuple(row) for row in df.itertuples(index=False, name=None)]
+    cursor.executemany(insert_sql, params)
+
+
+@app.route('/upload', methods=['GET', 'POST'], endpoint='upload')
+def upload_file():
+    if request.method == 'POST':
+        if 'file' not in request.files: return jsonify({'success': False, 'error': 'No file part.'}), 400
+        file = request.files['file']
+        if file.filename == '': return jsonify({'success': False, 'error': 'No selected file.'}), 400
+        if file and file.filename.endswith(('.xlsx', '.xls')):
+            filepath = None
+            conn = None
+            try:
+                filename = secure_filename(file.filename)
+                filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                file.save(filepath)
+                conn = get_db_connection()
+                if not conn:
+                    raise ConnectionError("Database connection failed during upload.")
+                cursor = conn.cursor()
+                df_master = pd.read_excel(filepath, sheet_name='master')
+                replace_table_with_df(df_master, 'master', cursor)
+                conn.commit()
+                return jsonify({'success': True, 'message': 'The master table has been successfully replaced.'})
+            except Exception as e:
+                if conn: conn.rollback()
+                print(f"ERROR during file upload: {e}")
+                traceback.print_exc()
+                if "No sheet named" in str(e):
+                    return jsonify({'success': False, 'error': "Upload failed: 'master' sheet not found."}), 500
+                return jsonify({'success': False, 'error': str(e)}), 500
+            finally:
+                if conn: conn.close()
+                if filepath and os.path.exists(filepath): os.remove(filepath)
+    return render_template('upload.html')
+
+
+# ==============================================================================
+# == ACTION AND API ROUTES
+# ==============================================================================
+
+@app.route('/generate_plan', methods=['POST'], endpoint='generate_plan')
+def generate_plan():
+    """
+    Reads from 'master', calculates the plan, then drops and creates
+    the 'Production_pl' table and populates the 'daily_release_plan' table.
+    """
+    sql_generate_plan_query = """
+    -- Drop the old Production_pl table if it exists
+    IF OBJECT_ID('dbo.Production_pl', 'U') IS NOT NULL
+        DROP TABLE dbo.Production_pl;
+
+    -- Use a CTE to calculate the plan and create the new table
+    WITH PlanCalculation AS (
+        SELECT
+            m.[Item code ],
+            m.[Description],
+            m.[Model],
+            m.[MonthlyAvg],
+            0 AS [Live Dispatch],
+            m.[MonthlyAvg] AS [Yet to Dispatch],
+            m.[Max Inv],
+            m.[Total inventory] AS [Current WIP],
+            m.[Daily Max Plan],
+            CASE 
+                WHEN cp.CalculatedPlan > 0 THEN cp.CalculatedPlan
+                ELSE 0 
+            END AS [Suggested release plan],
+            CASE 
+                WHEN cp.CalculatedPlan > 0 THEN cp.CalculatedPlan
+                ELSE 0 
+            END AS [Modified release plan]
+        FROM dbo.master m
+        CROSS APPLY (
+            SELECT MIN(v) AS CalculatedPlan
+            FROM (VALUES
+                (m.[Max Inv] - m.[Total inventory] + m.[Pending]),
+                (m.[Max Inv] - m.[Total inventory]),
+                (m.[Daily Max Plan])
+            ) AS value_table(v)
+        ) AS cp
+    )
+    SELECT * INTO Production_pl FROM PlanCalculation;
+
+    -- After creating the plan, populate the daily tracker
+    TRUNCATE TABLE dbo.daily_release_plan;
+    INSERT INTO dbo.daily_release_plan (
+        [Item code], [Suggested Plan], [Pending Trigger], [Daily max plan],
+        [Live Dispatch], [Long seam], [Dish fit up], [Cirseam welding], [Part assembly],
+        [Full welding], [Hydro Testing], [Powder coating], [PDI], [FG],
+        [Monthly Dispatch Qty], [Yet to Dispatch]
+    )
+    SELECT
+        p.[Item code ], p.[Suggested release plan], m.[Pending], p.[Daily Max Plan],
+        p.[Live Dispatch],
+        0,0,0,0,0,0,0,0,0, -- WIP stages initialized to zero
+        p.[Live Dispatch] AS [Monthly Dispatch Qty],
+        p.[Yet to Dispatch]
+    FROM Production_pl p
+    JOIN dbo.master m ON p.[Item code ] = m.[Item code ]
+    WHERE p.[Suggested release plan] > 0
+    ORDER BY p.[Suggested release plan] DESC;
+    """
+    conn = get_db_connection()
+    if not conn:
+        flash('Error: Could not connect to the database.', 'error')
+        return redirect(url_for('production_planning'))
+    try:
+        cursor = conn.cursor()
+        cursor.execute(sql_generate_plan_query)
+        conn.commit()
+        flash('Success! New Production Plan and Daily Tracker have been generated.', 'success')
+    except Exception as e:
+        print(f"Error during plan generation: {e}")
+        flash(f'An error occurred during plan generation: {e}', 'error')
+        traceback.print_exc()
+    finally:
+        if conn: conn.close()
+    return redirect(url_for('production_planning'))
+
+
+@app.route('/update_plan', methods=['POST'], endpoint='update_plan')
+def update_plan():
+    conn = get_db_connection()
+    if not conn:
+        flash('Error: Could not connect to the database.', 'error')
+        return redirect(url_for('production_planning'))
+    try:
+        cursor = conn.cursor()
+        for key, value in request.form.items():
+            if key.startswith('modified_plan_'):
+                item_code = key.split('modified_plan_')[1]
+                new_plan_value = int(float(value)) if value else 0
+                sql = "UPDATE Production_pl SET [Modified release plan] = ? WHERE [Item code ] = ?"
+                cursor.execute(sql, new_plan_value, item_code)
+        conn.commit()
+        flash('Success! Your changes have been saved.', 'success')
+    except Exception as e:
+        print(f"Error updating modified plan: {e}")
+        flash(f'An error occurred while saving your changes: {e}', 'error')
+    finally:
+        if conn: conn.close()
+    return redirect(url_for('production_planning'))
+
+
+@app.route('/move_item', methods=['POST'], endpoint='move_item')
+def move_item():
+    data = request.get_json()
+    item_code = data.get('item_code')
+    source_stage = data.get('source_stage')
+    quantity = int(data.get('quantity', 0))
+
+    if not all([item_code, source_stage, quantity > 0]):
+        return jsonify({'status': 'error', 'message': 'Missing data.'}), 400
+
+    conn = get_db_connection()
+    if not conn: return jsonify({'status': 'error', 'message': 'DB connection failed.'}), 500
+
+    try:
+        cursor = conn.cursor()
+        dest_stage = STAGES[0] if source_stage == 'Not Started' else STAGES[STAGES.index(source_stage) + 1]
+
+        if source_stage == 'Not Started':
+            # This is where a new item enters production.
+            # We update the tracker and the master table's stage count and total inventory.
+            cursor.execute(
+                f"UPDATE dbo.daily_release_plan SET [{dest_stage}]=ISNULL([{dest_stage}],0)+? WHERE [Item code]=?",
+                quantity, item_code)
+            cursor.execute(
+                f"UPDATE dbo.master SET [{dest_stage}]=ISNULL([{dest_stage}],0)+?, [Total inventory]=ISNULL([Total inventory],0)+? WHERE [Item code ]=?",
+                quantity, quantity, item_code)
+            cursor.execute("UPDATE dbo.Production_pl SET [Current WIP]=ISNULL([Current WIP],0)+? WHERE [Item code ]=?",
+                           quantity, item_code)
+        else:
+            # An existing item is moving between stages. The total inventory does not change.
+            cursor.execute(
+                f"UPDATE dbo.daily_release_plan SET [{source_stage}]=[{source_stage}]-?, [{dest_stage}]=ISNULL([{dest_stage}],0)+? WHERE [Item code]=?",
+                quantity, quantity, item_code)
+            cursor.execute(
+                f"UPDATE dbo.master SET [{source_stage}]=[{source_stage}]-?, [{dest_stage}]=ISNULL([{dest_stage}],0)+? WHERE [Item code ]=?",
+                quantity, quantity, item_code)
+
+        conn.commit()
+        return jsonify({'status': 'success', 'dest_stage': dest_stage})
+    except Exception as e:
+        print(f"Error moving item: {e}")
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+    finally:
+        if conn: conn.close()
+
+
+@app.route('/deliver_item', methods=['POST'], endpoint='deliver_item')
+def deliver_item():
+    data = request.get_json()
+    item_code = data.get('item_code')
+    quantity = int(data.get('quantity', 0))
+    if not all([item_code, quantity > 0]): return jsonify({'status': 'error', 'message': 'Missing data.'}), 400
+    conn = get_db_connection()
+    if not conn: return jsonify({'status': 'error', 'message': 'DB connection failed.'}), 500
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE dbo.daily_release_plan SET [FG]=[FG]-?, [Live Dispatch]=ISNULL([Live Dispatch],0)+? WHERE [Item code]=?",
+            quantity, quantity, item_code)
+        cursor.execute("UPDATE dbo.master SET [FG]=[FG]-?, [Total inventory]=[Total inventory]-? WHERE [Item code ]=?",
+                       quantity, quantity, item_code)
+        sql_update_pl = """
+        UPDATE dbo.Production_pl 
+        SET 
+            [Live Dispatch] = ISNULL([Live Dispatch], 0) + ?,
+            [Yet to Dispatch] = [Yet to Dispatch] - ?,
+            [Current WIP] = [Current WIP] - ?
+        WHERE [Item code ] = ?
+        """
+        cursor.execute(sql_update_pl, quantity, quantity, quantity, item_code)
+        conn.commit()
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        print(f"Error delivering item: {e}")
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+    finally:
+        if conn: conn.close()
+
+
+
+======================================================================
+== FILE: app\main.py
+======================================================================
+
+# This is the main entry point for the application.
+# Its only job is to import the app instance and run the development server.
+
+from app import app
+
+# This is a standard Python construct. The code inside this block will only run
+# when this script is executed directly (e.g., by running 'python app/main.py'
+# in the terminal). It will not run if this file is imported by another module.
+if __name__ == '__main__':
+    # This command starts the Flask development web server.
+    # debug=True is very useful during development. It enables two key features:
+    # 1. Automatic Reloader: The server will automatically restart whenever you
+    #    save a change to a file.
+    # 2. Interactive Debugger: If an error occurs, you'll see a detailed
+    #    traceback in your browser, which makes fixing bugs much easier.
+    app.run(debug=True)
+
+
+
+======================================================================
+== FILE: templates\layout.html
+======================================================================
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Production Dashboard{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <nav class="top-nav">
+        <div class="nav-header">
+            <img src="{{ url_for('static', filename='images/ELGI.png') }}" alt="ELGI Logo" class="logo-img">
+        </div>
+        <ul class="nav-links">
+            <li><a href="{{ url_for('production_planning') }}">Production Planning</a></li>
+            <li><a href="{{ url_for('wip_tracking') }}">WIP Tracker</a></li>
+            <li><a href="{{ url_for('attendance') }}">Worker Attendance</a></li>
+            <li><a href="{{ url_for('upload') }}">Upload Data</a></li>
+        </ul>
+    </nav>
+
+    <main class="main-content">
+        {% block content %}{% endblock %}
+    </main>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>
+
+======================================================================
+== FILE: templates\productionpl.html
+======================================================================
+
+{% extends "layout.html" %}
+
+{% block title %}Production Planning{% endblock %}
+
+{% block content %}
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            <div class="flash-messages">
+            {% for category, message in messages %}
+                <div class="flash {{ category }}">{{ message }}</div>
+            {% endfor %}
+            </div>
+        {% endif %}
+    {% endwith %}
+
+    <div class="header">
+        <h1>Production Planning</h1>
+        <div class="actions">
+            <form action="{{ url_for('generate_plan') }}" method="POST" style="display: inline;">
+                <button type="submit" class="button">Generate Daily Suggested Plan</button>
+            </form>
+
+            <button type="submit" form="update-plan-form" class="button save-button" style="margin-left: 10px;">Save Changes</button>
+        </div>
+    </div>
+
+    <form id="update-plan-form" action="{{ url_for('update_plan') }}" method="POST">
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Item Code</th>
+                        <th>Description</th>
+                        <th>Model</th>
+                        <th>Monthly Avg Plan</th>
+                        <th>Live Dispatch</th>
+                        <th>Yet to Dispatch</th>
+                        <th>Max Inv</th>
+                        <th>Current WIP</th>
+                        <th>Daily Max Plan</th>
+                        <th>Suggested Plan</th>
+                        <th>Modified Plan</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for plan in plans %}
+                    <tr>
+                        <!-- All keys are now cleaned by the row_to_dict function in routes.py -->
+                        <td>{{ plan['Item code'] }}</td>
+                        <td>{{ plan['Description'] }}</td>
+                        <td>{{ plan['Model'] }}</td>
+                        <td>{{ plan['MonthlyAvg'] }}</td>
+                        <td>{{ plan['Live Dispatch'] }}</td>
+                        <td>{{ plan['Yet to Dispatch'] }}</td>
+                        <td>{{ plan['Max Inv'] }}</td>
+                        <td>{{ plan['Current WIP'] }}</td>
+                        <td>{{ plan['Daily Max Plan'] }}</td>
+                        <td>{{ plan['Suggested release plan'] }}</td>
+                        <td>
+                            <!-- The input name uses the cleaned item code from the dictionary -->
+                            <input type="number"
+                                   name="modified_plan_{{ plan['Item code'] }}"
+                                   value="{{ plan['Modified release plan'] or 0 }}"
+                                   class="plan-input">
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="11" class="placeholder">No production plan data found. Click 'Generate' to create one.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        </form>
+{% endblock %}
+
+
+
+======================================================================
+== FILE: templates\wip.html
+======================================================================
+
+{% extends "layout.html" %}
+
+{% block title %}WIP Tracker{% endblock %}
+
+{% block content %}
+    <div class="header">
+        <h1>WIP Tracker</h1>
+        <div class="actions">
+            <button id="toggle-view-btn" class="button">Switch to Daily Tracker</button>
+        </div>
+    </div>
+
+    <div id="master-view">
+        <p>This is a high-level overview of all items and their total inventory across all stages from the master list.</p>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Item Code</th>
+                        <th>Description</th>
+                        <th>Total Inventory</th>
+                        <th>FG</th>
+                        <th>PDI</th>
+                        <th>Powder Coating</th>
+                        <th>Hydro Testing</th>
+                        <th>Full Welding</th>
+                        <th>Part Assembly</th>
+                        <th>Cirseam Welding</th>
+                        <th>Dish fit up</th>
+                        <th>Long Seam</th>
+                        <th>Live Dispatch Status</th>
+                        <th>Monthly Dispatch Qty</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in master_items %}
+                    <tr>
+                        <td>{{ item['Item code'] }}</td>
+                        <td>{{ item['Description'] }}</td>
+                        <td>{{ item['Total inventory'] }}</td>
+                        <td>{{ item['FG'] }}</td>
+                        <td>{{ item['PDI'] }}</td>
+                        <td>{{ item['Powder coating'] }}</td>
+                        <td>{{ item['Hydro Testing'] }}</td>
+                        <td>{{ item['Full welding'] }}</td>
+                        <td>{{ item['Part assembly'] }}</td>
+                        <td>{{ item['Cirseam welding'] }}</td>
+                        <td>{{ item['Dish fit up'] }}</td>
+                        <td>{{ item['Long seam'] }}</td>
+                        <td>{{ item['Live Dispatch Status'] }}</td>
+                        <td>{{ item['Monthly Dispatch Qty'] }}</td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="14" class="placeholder">No master data found.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div id="daily-tracker-view" style="display: none;">
+        <p>This is the interactive tracker for today's suggested plan. Use the action buttons to move items through the production stages.</p>
+
+        <div class="search-container">
+            <input type="search" id="wip-search" placeholder="Search daily tracker by Item Code...">
+        </div>
+
+        <div class="table-container">
+            <table id="wip-table">
+                <thead>
+                    <tr>
+                        <th>Item Code</th>
+                        <th>Suggested Plan</th>
+                        <th>Live Dispatch</th>
+                        <th>Long seam</th>
+                        <th>Dish fit up</th>
+                        <th>Cirseam welding</th>
+                        <th>Part assembly</th>
+                        <th>Full welding</th>
+                        <th>Hydro Testing</th>
+                        <th>Powder coating</th>
+                        <th>PDI</th>
+                        <th>FG</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="wip-table-body">
+                    {% for item in tracker_items %}
+                    <tr data-itemcode="{{ item['Item code'] }}">
+                        <td>{{ item['Item code'] }}</td>
+                        <td class="plan-qty">{{ item['Suggested Plan'] }}</td>
+                        <td class="dispatch-qty">{{ item['Live Dispatch'] }}</td>
+                        <td class="stage-qty" data-stage="Long seam">{{ item['Long seam'] }}</td>
+                        <td class="stage-qty" data-stage="Dish fit up">{{ item['Dish fit up'] }}</td>
+                        <td class="stage-qty" data-stage="Cirseam welding">{{ item['Cirseam welding'] }}</td>
+                        <td class="stage-qty" data-stage="Part assembly">{{ item['Part assembly'] }}</td>
+                        <td class="stage-qty" data-stage="Full welding">{{ item['Full welding'] }}</td>
+                        <td class="stage-qty" data-stage="Hydro Testing">{{ item['Hydro Testing'] }}</td>
+                        <td class="stage-qty" data-stage="Powder coating">{{ item['Powder coating'] }}</td>
+                        <td class="stage-qty" data-stage="PDI">{{ item['PDI'] }}</td>
+                        <td class="stage-qty" data-stage="FG">{{ item['FG'] }}</td>
+                        <td>
+                            <button class="button-small move-btn">Move...</button>
+                            <button class="button-small deliver-btn">Deliver...</button>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="12" class="placeholder">No daily plan generated yet. Go to Production Planning to generate one.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div id="move-modal" class="modal">
+        <div class="modal-content">
+            <span class="close-button">&times;</span>
+            <h3 id="modal-title">Move Units Forward</h3>
+            <form id="move-form">
+                <input type="hidden" id="modal-item-code">
+                <label for="source-stage">Move From:</label>
+                <select id="source-stage" name="source-stage" required></select>
+                <label for="move-quantity">Number of Units to Move:</label>
+                <input type="number" id="move-quantity" name="move-quantity" min="1" required>
+                <button type="submit" class="button">Confirm Move</button>
+            </form>
+        </div>
+    </div>
+
+    <div id="deliver-modal" class="modal">
+        <div class="modal-content">
+            <span class="close-button">&times;</span>
+            <h3 id="deliver-modal-title">Deliver Units from FG</h3>
+            <form id="deliver-form">
+                <input type="hidden" id="deliver-item-code">
+                <label for="deliver-quantity">Number of Units to Deliver:</label>
+                <input type="number" id="deliver-quantity" name="deliver-quantity" min="1" required>
+                <button type="submit" class="button">Confirm Delivery</button>
+            </form>
+        </div>
+    </div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+    .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.5); }
+    .modal-content { background-color: #fefefe; margin: 15% auto; padding: 20px; border: 1px solid #888; width: 80%; max-width: 400px; border-radius: 8px; }
+    .close-button { color: #aaa; float: right; font-size: 28px; font-weight: bold; cursor: pointer; }
+    #move-form label, #deliver-form label { display: block; margin-top: 10px; }
+    #move-form select, #move-form input, #deliver-form input { width: 100%; padding: 8px; margin-top: 5px; box-sizing: border-box; }
+    #move-form button, #deliver-form button { margin-top: 20px; }
+    .button-small { padding: 4px 8px; font-size: 12px; margin-top: 2px; }
+    .search-container { margin-bottom: 15px; }
+    #wip-search { width: 100%; padding: 8px; font-size: 14px; box-sizing: border-box; }
+</style>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    // --- ELEMENT SELECTORS ---
+    const toggleBtn = document.getElementById('toggle-view-btn');
+    const masterView = document.getElementById('master-view');
+    const dailyTrackerView = document.getElementById('daily-tracker-view');
+
+    const moveModal = document.getElementById('move-modal');
+    const deliverModal = document.getElementById('deliver-modal');
+
+    // --- VIEW TOGGLE LOGIC ---
+    toggleBtn.addEventListener('click', () => {
+        if (masterView.style.display === 'none') {
+            masterView.style.display = 'block';
+            dailyTrackerView.style.display = 'none';
+            toggleBtn.textContent = 'Switch to Daily Tracker';
+        } else {
+            masterView.style.display = 'none';
+            dailyTrackerView.style.display = 'block';
+            toggleBtn.textContent = 'Switch to Master Overview';
+        }
+    });
+
+    // --- MOVE MODAL LOGIC ---
+    const moveForm = document.getElementById('move-form');
+    const sourceStageSelect = document.getElementById('source-stage');
+    const moveQuantityInput = document.getElementById('move-quantity');
+    const moveItemCodeInput = document.getElementById('modal-item-code');
+    const moveModalTitle = document.getElementById('modal-title');
+
+    document.querySelectorAll('.move-btn').forEach(button => {
+        button.addEventListener('click', function (e) {
+            const row = e.target.closest('tr');
+            const itemCode = row.dataset.itemcode;
+            moveModalTitle.textContent = `Move Units for: ${itemCode}`;
+            moveItemCodeInput.value = itemCode;
+
+            const planQty = parseInt(row.querySelector('.plan-qty').textContent) || 0;
+            let totalInWIP = 0;
+            const stageQtys = {};
+            row.querySelectorAll('.stage-qty').forEach(cell => {
+                const qty = parseInt(cell.textContent) || 0;
+                stageQtys[cell.dataset.stage] = qty;
+                totalInWIP += qty;
+            });
+
+            const notStartedQty = planQty - totalInWIP;
+
+            sourceStageSelect.innerHTML = '';
+            if (notStartedQty > 0) {
+                const option = new Option(`Not Started (Avail: ${notStartedQty})`, 'Not Started');
+                option.dataset.max = notStartedQty;
+                sourceStageSelect.add(option);
+            }
+            const stages = ["Long seam", "Dish fit up", "Cirseam welding", "Part assembly", "Full welding", "Hydro Testing", "Powder coating", "PDI"];
+            stages.forEach(stage => {
+                if (stageQtys[stage] > 0) {
+                    const option = new Option(`${stage} (Avail: ${stageQtys[stage]})`, stage);
+                    option.dataset.max = stageQtys[stage];
+                    sourceStageSelect.add(option);
+                }
+            });
+
+            if (sourceStageSelect.options.length === 0) {
+                alert('No units available to move for this item.');
+                return;
+            }
+            updateMoveQuantityLimit();
+            moveModal.style.display = 'block';
+        });
+    });
+
+    sourceStageSelect.addEventListener('change', updateMoveQuantityLimit);
+    function updateMoveQuantityLimit() {
+        const selectedOption = sourceStageSelect.options[sourceStageSelect.selectedIndex];
+        if (selectedOption) {
+            moveQuantityInput.max = selectedOption.dataset.max;
+            moveQuantityInput.value = 1;
+        }
+    }
+
+    moveForm.addEventListener('submit', function (e) {
+        e.preventDefault();
+        const data = {
+            item_code: moveItemCodeInput.value,
+            source_stage: sourceStageSelect.value,
+            quantity: parseInt(moveQuantityInput.value)
+        };
+
+        fetch("{{ url_for('move_item') }}", {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        })
+        .then(response => response.json())
+        .then(result => {
+            if (result.status === 'success') {
+                const row = document.querySelector(`tr[data-itemcode="${data.item_code}"]`);
+                if (data.source_stage !== 'Not Started') {
+                    const sourceCell = row.querySelector(`td[data-stage="${data.source_stage}"]`);
+                    sourceCell.textContent = parseInt(sourceCell.textContent) - data.quantity;
+                }
+                const destCell = row.querySelector(`td[data-stage="${result.dest_stage}"]`);
+                destCell.textContent = parseInt(destCell.textContent) + data.quantity;
+                moveModal.style.display = 'none';
+            } else { alert('Error: ' + result.message); }
+        })
+        .catch(error => { alert('An unexpected error occurred.'); console.error(error); });
+    });
+
+    // --- DELIVER MODAL LOGIC ---
+    const deliverForm = document.getElementById('deliver-form');
+    const deliverItemCodeInput = document.getElementById('deliver-item-code');
+    const deliverQuantityInput = document.getElementById('deliver-quantity');
+    const deliverModalTitle = document.getElementById('deliver-modal-title');
+
+    document.querySelectorAll('.deliver-btn').forEach(button => {
+        button.addEventListener('click', function (e) {
+            const row = e.target.closest('tr');
+            const itemCode = row.dataset.itemcode;
+            const fgCell = row.querySelector('td[data-stage="FG"]');
+            const availableFg = parseInt(fgCell.textContent) || 0;
+
+            if (availableFg <= 0) {
+                alert('No units available at FG to deliver.');
+                return;
+            }
+            deliverModalTitle.textContent = `Deliver Units for: ${itemCode}`;
+            deliverItemCodeInput.value = itemCode;
+            deliverQuantityInput.max = availableFg;
+            deliverQuantityInput.value = 1;
+            deliverModal.style.display = 'block';
+        });
+    });
+
+    deliverForm.addEventListener('submit', function (e) {
+        e.preventDefault();
+        const data = {
+            item_code: deliverItemCodeInput.value,
+            quantity: parseInt(deliverQuantityInput.value)
+        };
+
+        fetch("{{ url_for('deliver_item') }}", {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        })
+        .then(response => response.json())
+        .then(result => {
+            if (result.status === 'success') {
+                const row = document.querySelector(`tr[data-itemcode="${data.item_code}"]`);
+                const fgCell = row.querySelector('td[data-stage="FG"]');
+                const dispatchCell = row.querySelector('.dispatch-qty');
+                fgCell.textContent = parseInt(fgCell.textContent) - data.quantity;
+                dispatchCell.textContent = parseInt(dispatchCell.textContent) + data.quantity;
+                deliverModal.style.display = 'none';
+            } else { alert('Error: ' + result.message); }
+        })
+        .catch(error => { alert('An unexpected error occurred.'); console.error(error); });
+    });
+
+    // --- SEARCH FILTER LOGIC ---
+    const searchInput = document.getElementById('wip-search');
+    const tableBody = document.getElementById('wip-table-body');
+    const tableRows = tableBody.getElementsByTagName('tr');
+
+    searchInput.addEventListener('keyup', function() {
+        const searchTerm = searchInput.value.toLowerCase();
+        for (const row of tableRows) {
+            const rowText = row.cells[0].textContent.toLowerCase(); // Search only by item code
+            row.style.display = rowText.includes(searchTerm) ? "" : "none";
+        }
+    });
+
+    // --- COMMON MODAL CLOSE LOGIC ---
+    document.querySelectorAll('.modal .close-button').forEach(btn => {
+        btn.onclick = () => { btn.closest('.modal').style.display = 'none'; }
+    });
+    window.onclick = (event) => {
+        if (event.target.classList.contains('modal')) {
+            event.target.style.display = 'none';
+        }
+    }
+});
+</script>
+{% endblock %}
+
+======================================================================
+== FILE: templates\attendance.html
+======================================================================
+
+{% extends "layout.html" %}
+
+{% block title %}Worker Attendance{% endblock %}
+
+{% block content %}
+<div class="header">
+    <h1>Worker Attendance</h1>
+    <p>Enter the number of workers present for each operation and shift.</p>
+</div>
+
+<form method="POST" action="{{ url_for('attendance') }}">
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>Operation</th>
+                    <th>No. of Stations</th>
+                    <th>No. of Shifts</th>
+                    <th>Manpower Required</th>
+                    <th>Manpower Present</th>
+                    <th>Available Time</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for detail in details %}
+                <tr>
+                    <!-- CHANGE: Accessing data by column name string instead of object attribute -->
+                    <td>{{ detail['Operation'] }}</td>
+                    <td>{{ detail['No_of_stations'] }}</td>
+                    <td>{{ detail['No_of_shifts'] }}</td>
+                    <td>{{ detail['Manpower_Req'] }}</td>
+                    <td>
+                        <!-- CHANGE: The key 'SNo' must match the database column name exactly for the form to work -->
+                        <input type="number" name="manpower_{{ detail['SNo'] }}" value="{{ detail['Manpower_present'] }}" class="manpower-input">
+                    </td>
+                    <td>{{ detail['Available_Time'] }}</td>
+                </tr>
+                {% else %}
+                <!-- This block runs if the 'details' list passed from routes.py is empty. -->
+                <tr>
+                    <td colspan="6" class="placeholder">No shift and station data found in the database.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <div class="form-actions">
+        <button type="submit" class="button">Update Attendance</button>
+    </div>
+</form>
+{% endblock %}
+
+
+
+======================================================================
+== FILE: templates\upload.html
+======================================================================
+
+{% extends "layout.html" %}
+
+{% block title %}Upload Excel Data{% endblock %}
+
+{% block content %}
+<style>
+    /* --- Styles for the Drag-and-Drop Uploader --- */
+    #drop-zone {
+        border: 2px dashed #ccc;
+        border-radius: 8px;
+        padding: 50px;
+        text-align: center;
+        color: #666;
+        font-size: 1.1rem;
+        transition: border-color 0.3s, background-color 0.3s;
+        cursor: pointer;
+        margin-top: 20px;
+    }
+    #drop-zone.dragover {
+        border-color: #007bff;
+        background-color: #f0f8ff;
+    }
+    #drop-zone p {
+        margin: 0;
+    }
+    #file-input {
+        display: none; /* Hide the default file input */
+    }
+
+    /* --- Styles for Status Messages & Loader --- */
+    #upload-status {
+        margin-top: 20px;
+        text-align: center;
+    }
+    .status-message {
+        padding: 15px;
+        border-radius: 5px;
+        display: none;
+    }
+    .status-message.success {
+        background-color: #d4edda;
+        color: #155724;
+        border: 1px solid #c3e6cb;
+    }
+    .status-message.error {
+        background-color: #f8d7da;
+        color: #721c24;
+        border: 1px solid #f5c6cb;
+    }
+
+    .loader {
+        border: 4px solid #f3f3f3;
+        border-top: 4px solid #3498db;
+        border-radius: 50%;
+        width: 40px;
+        height: 40px;
+        animation: spin 1s linear infinite;
+        margin: 20px auto;
+        display: none;
+    }
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
+</style>
+
+<div class="header">
+    <h1>Upload and Update Database</h1>
+    <p>Drag and drop your updated Excel file (.xlsx) into the box below to update the database.</p>
+</div>
+
+<div id="drop-zone">
+    <p>Drag & Drop Excel File Here</p>
+    <p>or</p>
+    <p><strong>Click to Select File</strong></p>
+</div>
+<input type="file" id="file-input" accept=".xlsx, .xls">
+
+<div id="upload-status">
+    <div id="loader" class="loader"></div>
+    <div id="status-message" class="status-message"></div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const dropZone = document.getElementById('drop-zone');
+    const fileInput = document.getElementById('file-input');
+    const loader = document.getElementById('loader');
+    const statusMessage = document.getElementById('status-message');
+
+    // --- Event Listeners ---
+
+    // Open file dialog when the drop zone is clicked
+    dropZone.addEventListener('click', () => {
+        fileInput.click();
+    });
+
+    // Handle file selection from the dialog
+    fileInput.addEventListener('change', (e) => {
+        const files = e.target.files;
+        if (files.length > 0) {
+            handleFiles(files);
+        }
+    });
+
+    // Prevent default browser behavior for drag events
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, preventDefaults, false);
+    });
+
+    function preventDefaults(e) {
+        e.preventDefault();
+        e.stopPropagation();
+    }
+
+    // Highlight drop zone when a file is dragged over it
+    ['dragenter', 'dragover'].forEach(eventName => {
+        dropZone.addEventListener(eventName, () => dropZone.classList.add('dragover'), false);
+    });
+
+    ['dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, () => dropZone.classList.remove('dragover'), false);
+    });
+
+    // Handle the dropped file
+    dropZone.addEventListener('drop', (e) => {
+        const dt = e.dataTransfer;
+        const files = dt.files;
+        handleFiles(files);
+    }, false);
+
+
+    // --- Core Functions ---
+
+    function handleFiles(files) {
+        // We only process the first file
+        const file = files[0];
+
+        // Validate file type
+        if (!file.name.endsWith('.xlsx') && !file.name.endsWith('.xls')) {
+            displayStatus('Invalid file type. Please upload an Excel file (.xlsx or .xls).', 'error');
+            return;
+        }
+        
+        // If validation passes, upload the file
+        uploadFile(file);
+    }
+
+    function uploadFile(file) {
+        // Show loading indicator and reset status
+        loader.style.display = 'block';
+        statusMessage.style.display = 'none';
+        statusMessage.textContent = ''; // Clear previous message
+        dropZone.style.pointerEvents = 'none'; // Disable drop zone during upload
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        fetch("{{ url_for('upload') }}", {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => {
+            if (!response.ok) {
+                // Try to get a meaningful error from the server's JSON response
+                return response.json().then(err => { throw new Error(err.error || 'Server responded with an error.') });
+            }
+            return response.json();
+        })
+        .then(result => {
+            if (result.success) {
+                displayStatus(result.message, 'success');
+            } else {
+                displayStatus(`Error: ${result.error}`, 'error');
+            }
+        })
+        .catch(error => {
+            console.error('Upload Error:', error);
+            displayStatus(error.message || 'An unexpected network error occurred.', 'error');
+        })
+        .finally(() => {
+            // Hide loading indicator and re-enable drop zone
+            loader.style.display = 'none';
+            dropZone.style.pointerEvents = 'auto';
+            fileInput.value = ''; // Reset file input to allow re-uploading the same file
+        });
+    }
+
+    function displayStatus(message, type) {
+        statusMessage.textContent = message;
+        statusMessage.className = `status-message ${type}`; // e.g., 'status-message success'
+        statusMessage.style.display = 'block';
+    }
+});
+</script>
+{% endblock %}
+
+======================================================================
+== FILE: static\css\style.css
+======================================================================
+
+/* --- Google Font Import --- */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+/* --- CSS Variables --- */
+:root {
+    --nav-bg: #1a222d;
+    --nav-text: #adb5bd;
+    --nav-header: #ffffff;
+    --nav-hover-bg: #343a40;
+    --nav-hover-text: #ffffff;
+    --main-bg: #f8f9fa;
+    --content-bg: #ffffff;
+    --text-primary: #212529;
+    --text-secondary: #6c757d;
+    --border-color: #dee2e6;
+    --accent-color: #007bff;
+    --accent-color-hover: #0056b3;
+    --success-bg: #d4edda;
+    --success-text: #155724;
+    --error-bg: #f8d7da;
+    --error-text: #721c24;
+}
+
+/* --- General Body Styling --- */
+body {
+    margin: 0;
+    font-family: 'Inter', sans-serif;
+    background-color: var(--main-bg);
+    color: var(--text-primary);
+}
+
+/* --- Horizontal Top Navigation Bar --- */
+.top-nav {
+    display: flex;
+    align-items: center;
+    background-color: var(--nav-bg);
+    color: var(--nav-text);
+    padding: 0 30px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    position: sticky;
+    top: 0;
+    z-index: 1000;
+}
+
+.nav-header {
+    padding: 10px 0; /* Adjusted padding for image */
+}
+
+/* NEW: Style for the logo image */
+.logo-img {
+    height: 25px; /* Controls the height of the logo */
+    width: auto;  /* Maintains the aspect ratio */
+    display: block; /* Removes any extra space below the image */
+}
+
+.nav-links {
+    display: flex;
+    list-style-type: none;
+    margin: 0 0 0 40px;
+    padding: 0;
+}
+
+.nav-links li a {
+    display: block;
+    color: var(--nav-text);
+    text-decoration: none;
+    padding: 20px 15px;
+    font-weight: 500;
+    transition: background-color 0.2s, color 0.2s;
+}
+
+.nav-links li a:hover {
+    background-color: var(--nav-hover-bg);
+    color: var(--nav-hover-text);
+}
+
+/* --- Main Content Area --- */
+.main-content {
+    padding: 30px;
+}
+
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    padding-bottom: 15px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.header h1 {
+    margin: 0;
+}
+
+/* --- Tables (Adjusted to prevent horizontal scrolling) --- */
+.table-container {
+    background-color: var(--content-bg);
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    overflow-x: auto; /* Fallback for very extreme cases */
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed; /* Helps distribute column width more evenly */
+}
+
+th, td {
+    padding: 12px 10px; /* Reduced horizontal padding */
+    text-align: left;
+    border-bottom: 1px solid var(--border-color);
+    word-wrap: break-word; /* Allow long words to break and wrap */
+    font-size: 14px; /* Slightly smaller font for more space */
+}
+
+thead th {
+    background-color: #f8f9fa;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+tbody tr:nth-child(even) {
+    background-color: #f8f9fa;
+}
+
+tbody tr:hover {
+    background-color: #e9ecef;
+}
+
+td.placeholder {
+    text-align: center;
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+/* --- Buttons & Forms --- */
+.button {
+    background-color: var(--accent-color);
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 5px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.button:hover {
+    background-color: var(--accent-color-hover);
+}
+
+.button-small {
+    padding: 4px 8px;
+    font-size: 12px;
+    margin-top: 2px;
+}
+
+.save-button {
+    background-color: #28a745;
+}
+.save-button:hover {
+    background-color: #218838;
+}
+
+.form-actions {
+    margin-top: 20px;
+    text-align: right;
+}
+
+input[type="number"], input[type="search"], select {
+    padding: 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+}
+
+.plan-input {
+    width: 100px;
+}
+
+.search-container {
+    margin-bottom: 15px;
+}
+#wip-search {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+/* --- Modals --- */
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 1001; /* Should be higher than sticky nav */
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+    background-color: rgba(0,0,0,0.5);
+    backdrop-filter: blur(2px);
+}
+.modal-content {
+    background-color: #fefefe;
+    margin: 15% auto;
+    padding: 20px 30px;
+    border: 1px solid #888;
+    width: 80%;
+    max-width: 450px;
+    border-radius: 8px;
+    box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+}
+.close-button {
+    color: #aaa;
+    float: right;
+    font-size: 28px;
+    font-weight: bold;
+    cursor: pointer;
+}
+#move-form label, #deliver-form label {
+    display: block;
+    margin-top: 15px;
+    font-weight: 500;
+}
+#move-form select, #move-form input, #deliver-form input {
+    width: 100%;
+    margin-top: 5px;
+    box-sizing: border-box;
+}
+#move-form button, #deliver-form button {
+    margin-top: 20px;
+    width: 100%;
+}
+
+/* --- Flash Messages --- */
+.flash-messages {
+    margin-bottom: 15px;
+}
+.flash {
+    padding: 15px;
+    border-radius: 5px;
+    border: 1px solid transparent;
+}
+.flash.success {
+    background-color: var(--success-bg);
+    color: var(--success-text);
+    border-color: #c3e6cb;
+}
+.flash.error {
+    background-color: var(--error-bg);
+    color: var(--error-text);
+    border-color: #f5c6cb;
+}
+
+

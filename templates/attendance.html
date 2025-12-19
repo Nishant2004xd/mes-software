@@ -1,0 +1,577 @@
+{% extends "layout.html" %}
+
+{% block title %}Worker Attendance{% endblock %}
+
+{% block content %}
+<style>
+    /* In templates/attendance.html, inside the <style> block */
+
+    /* For the new Action column */
+    .action-buttons {
+        display: flex;
+        gap: 5px;
+        justify-content: center;
+    }
+    .button-small {
+        padding: 4px 10px;
+        font-size: 0.8rem;
+    }
+
+    /* For the transfer modal */
+    .modal-info-display {
+        background-color: #f3f4f6;
+        padding: 10px;
+        border-radius: 4px;
+        margin-bottom: 15px;
+    }
+    .modal-info-display p {
+        margin: 5px 0;
+        font-size: 0.9em;
+    }
+    .modal-info-display strong {
+        color: var(--text-primary);
+    }
+    .attendance-grid { table-layout: auto; width: 100%; }
+    .attendance-grid th, .attendance-grid td { text-align: center; padding: 8px; vertical-align: middle; }
+    .attendance-grid th.day-header { font-weight: 500; white-space: nowrap; border-left: 1px solid var(--border-color); border-right: 1px solid var(--border-color);}
+    .attendance-grid td.employee-name, .attendance-grid th.employee-header { text-align: left; font-weight: 500; width: 250px; white-space: nowrap; }
+    .weekend { background-color: #f3f4f6; color: #9ca3af; }
+    .holiday { background-color: #dbeafe; color: #1e40af; font-weight: bold; }
+    .working-day-override { background-color: #fef9c3 !important; }
+    .attendance-select { width: 100%; min-width: 45px; padding: 4px; border: 1px solid #ccc; border-radius: 4px; }
+    .attendance-select.present { background-color: #dcfce7; }
+    .attendance-select.absent { background-color: #fee2e2; }
+    .week-nav { display: flex; align-items: center; gap: 10px; }
+    .add-form { margin-bottom: 20px; padding: 20px; background-color: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6; }
+    .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; }
+    .remove-button { background-color: #dc3545; color: white; padding: 5px 10px; border: none; border-radius: 4px; cursor: pointer; }
+
+    /* --- Alignment Fixes --- */
+    .controls-container {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-end; /* Aligns all items to the bottom edge */
+        flex-wrap: wrap;
+        gap: 20px;
+    }
+    .controls-container form {
+        display: flex;
+        align-items: flex-end; /* Aligns items inside the form to the bottom */
+        gap: 10px;
+    }
+    .controls-container .form-group label {
+        font-size: 0.8rem;
+        margin-bottom: 4px;
+        font-weight: 500;
+        color: var(--text-secondary);
+        display: block;
+    }
+    .week-nav h3 {
+        margin: 0;
+    }
+    .input-group {
+        display: flex;
+        align-items: center;
+    }
+
+    /* --- Styles for Manage Employee Table --- */
+    #employee-manage-table th, #employee-manage-table td {
+        text-align: left;
+        padding: 10px;
+    }
+    #employee-manage-table .action-buttons {
+        display: flex;
+        gap: 10px;
+    }
+    #employee-manage-table .button-small {
+        padding: 4px 10px;
+        font-size: 0.8rem;
+    }
+
+    /* --- MODAL FORM STYLING --- */
+    .modal-form-grid {
+        display: grid;
+        grid-template-columns: 1fr; /* Single column layout */
+        gap: 10px; /* Space between rows */
+    }
+    /* NEW: Grid for Title and Name */
+    .modal-name-grid {
+        display: grid;
+        grid-template-columns: 80px 1fr; /* Fixed size for title, rest for name */
+        gap: 10px;
+    }
+    .modal-form-grid label {
+        font-weight: 500;
+        margin-bottom: 3px;
+        display: block;
+    }
+
+    /* --- NEW: Header for Employee List --- */
+    .list-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 10px;
+    }
+    .list-header h3 {
+        margin: 0;
+    }
+
+</style>
+
+<div class="header">
+    <h1 id="page-title">Worker Attendance</h1>
+    <div class="actions">
+        <button id="toggle-view-btn" class="button button-secondary">Manage Employees</button>
+        <a href="{{ url_for('export_attendance') }}" class="button button-secondary">Export Monthly Report</a>
+    </div>
+</div>
+
+<div id="attendance-view">
+    <div class="controls-container add-form">
+        <div class="week-nav">
+            <a href="{{ url_for('attendance', start_date=prev_week_start, stage=selected_stage) }}" class="button">&laquo;</a>
+            <h3>{{ current_week_str }}</h3>
+            <a href="{{ url_for('attendance', start_date=next_week_start, stage=selected_stage) }}" class="button">&raquo;</a>
+        </div>
+
+        <form method="GET" action="{{ url_for('attendance') }}">
+            <div class="form-group">
+                <label for="stage-filter">Filter by Stage:</label>
+                <select name="stage" id="stage-filter" onchange="this.form.submit()">
+                    <option value="All" {% if selected_stage == 'All' %}selected{% endif %}>All Stages</option>
+                    {% for stage in stage_filter_list %}
+                        <option value="{{ stage }}" {% if selected_stage == stage %}selected{% endif %}>{{ stage }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+        </form>
+
+        <form action="{{ url_for('add_holiday') }}" method="POST">
+            <input type="hidden" name="start_date" value="{{ week_days[0].strftime('%Y-%m-%d') }}">
+            <div class="form-group">
+                <label for="holiday_date">Mark Holiday:</label>
+                <div class="input-group">
+                    <input type="date" id="holiday_date" name="holiday_date" required>
+                    <button type="submit" class="button">Mark Holiday</button>
+                </div>
+            </div>
+        </form>
+
+        <form action="{{ url_for('mark_working_day') }}" method="POST">
+            <input type="hidden" name="start_date" value="{{ week_days[0].strftime('%Y-%m-%d') }}">
+            <div class="form-group">
+                <label for="work_date">Mark Working Day:</label>
+                <div class="input-group">
+                    <input type="date" id="work_date" name="work_date" required>
+                    <button type="submit" class="button">Mark as Working</button>
+                </div>
+            </div>
+        </form>
+    </div>
+
+    <form id="attendance-form">
+        <input type="hidden" name="start_date" value="{{ week_days[0].strftime('%Y-%m-%d') }}">
+        <div class="table-container">
+            <table class="attendance-grid">
+            <thead>
+                <tr>
+                    <th class="employee-header">Employee Name</th>
+                    <th style="text-align: left; width: 150px;">Stage</th>
+                    {% for day in week_days %}
+                        <th class="day-header
+                            {% set day_type = holidays.get(day) %}
+                            {% if day_type == 'Holiday' %}holiday{% elif day_type == 'Working Day' %}working-day-override{% elif is_weekend %}weekend{% endif %}">
+                            <span>{{ day.strftime('%a') }}<br>{{ day.day }}</span>
+                        </th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for employee in employees %}
+                <tr>
+                    <td class="employee-name">{{ employee['Title'] }} {{ employee['Name of the Employee'] }}</td>
+
+                    {% set default_stage = employee['Stage'] %}
+                    {% set roster_info = roster_dict.get(employee['E.code'], {}).get(today) %}
+                    {% set assigned_stage = roster_info.get('assigned_stage') if roster_info else default_stage %}
+                    <td style="text-align: left;">{{ assigned_stage }}</td>
+
+                    {% for day in week_days %}
+                        {% set status = attendance_data.get(employee['E.code'], {}).get(day) %}
+                        {% set day_type = holidays.get(day) %}
+                        {% set is_workday = (day_type == 'Working Day') or (day.weekday() < 5 and day_type != 'Holiday') %}
+
+                        <td class="{% if not is_workday %}{% if day_type == 'Holiday' %}holiday{% else %}weekend{% endif %}{% endif %}">
+                            {% if is_workday %}
+                                <select name="status-{{ employee['E.code'] }}-{{ day.strftime('%Y-%m-%d') }}" class="attendance-select {% if status and 'Present' in status %}present{% elif status == 'Absent' %}absent{% endif %}">
+                                    <option value="" {% if not status %}selected{% endif %}>--</option>
+                                    <option value="Present-1" {% if status == 'Present-1' %}selected{% endif %}>P - S1</option>
+                                    <option value="Present-2" {% if status == 'Present-2' %}selected{% endif %}>P - S2</option>
+                                    <option value="Absent" {% if status == 'Absent' %}selected{% endif %}>A</option>
+                                </select>
+                            {% endif %}
+                        </td>
+                    {% endfor %}
+                </tr>
+                {% else %}
+                <tr><td colspan="{{ 7 + 2 }}" class="placeholder">No employees found.</td></tr>
+                {% endfor %}
+            </tbody>
+            </table>
+        </div>
+    </form>
+</div>
+
+<div id="manage-view" style="display: none;">
+
+    <div class="add-form">
+        <div class="list-header">
+            <h3>Employee List</h3>
+            <button id="show-add-modal-btn" class="button">Add New Employee</button>
+        </div>
+
+        <div class="table-container">
+            <table id="employee-manage-table">
+                <thead>
+                    <tr>
+                        <th>E.code</th>
+                        <th>Name</th>
+                        <th>Company / Contract</th>
+                        <th>DOJ</th>
+                        <th>Stage</th>
+                        <th style="width: 140px;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for employee in manage_employees %}
+                    <tr>
+                        <td>{{ employee['E.code'] }}</td>
+                        <td>{{ employee['Title'] }} {{ employee['Name of the Employee'] }}</td>
+                        <td>{{ employee['Company / Contract'] }}</td>
+                        <td>{{ employee['DOJ'].strftime('%d-%b-%Y') if employee['DOJ'] else 'N/A' }}</td>
+                        <td>{{ employee['Stage'] }}</td>
+
+                        <td class="action-buttons">
+                            <button class="button button-small"
+                                onclick="populateEditModal(this)"
+                                data-ecode="{{ employee['E.code'] }}"
+                                data-title="{{ employee['Title'] or '' }}"
+                                data-name="{{ employee['Name of the Employee'] }}"
+                                data-company="{{ employee['Company / Contract'] }}"
+                                data-doj="{{ employee['DOJ'].strftime('%Y-%m-%d') if employee['DOJ'] else '' }}"
+                                data-stage="{{ employee['Stage'] }}">
+                                Edit
+                            </button>
+
+                            <form action="{{ url_for('remove_employee') }}" method="POST" onsubmit="return confirm('Are you sure you want to remove {{ employee['Name of the Employee'] }}?');" style="display:inline;">
+                                <input type="hidden" name="e_code" value="{{ employee['E.code'] }}">
+                                <input type="hidden" name="start_date" value="{{ week_days[0].strftime('%Y-%m-%d') }}">
+                                <button type="submit" class="button button-small button-danger">Remove</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="6" class="placeholder">No employees found.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div id="add-employee-modal" class="modal">
+    <div class="modal-content">
+        <span class="close-button">&times;</span>
+        <h3>Add New Employee</h3>
+        <form id="add-employee-form" action="{{ url_for('add_employee') }}" method="POST">
+            <div class="modal-form-grid">
+                <div class="modal-name-grid">
+                    <div>
+                        <label for="add_title">Title</label>
+                        <select id="add_title" name="title" class="modal-input" required>
+                            <option value="Mr.">Mr.</option>
+                            <option value="Ms.">Ms.</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="add_name">Name of the Employee</label>
+                        <input type="text" id="add_name" name="name" class="modal-input" required>
+                    </div>
+                </div>
+                <div>
+                    <label for="add_e_code">E.code (Unique)</label>
+                    <input type="text" id="add_e_code" name="e_code" class="modal-input" required>
+                </div>
+                <div>
+                    <label for="add_company">Company / Contract</label>
+                    <input type="text" id="add_company" name="company" class="modal-input" required>
+                </div>
+                <div>
+                    <label for="add_doj">Date of Joining (DOJ)</label>
+                    <input type="date" id="add_doj" name="doj" class="modal-input" required>
+                </div>
+                <div>
+                    <label for="add_stage">Stage</label>
+                     <select id="add_stage" name="stage" class="modal-input" required>
+                        <option value="">-- Select Stage --</option>
+                        {% for stage in stage_filter_list %}
+                            <option value="{{ stage }}">{{ stage }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <div class="form-actions" style="margin-top: 20px;">
+                <button type="submit" class="button">Add Employee</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div id="edit-employee-modal" class="modal">
+    <div class="modal-content">
+        <span class="close-button">&times;</span>
+        <h3 id="edit-modal-title">Edit Employee</h3>
+        <form id="edit-employee-form" action="{{ url_for('edit_employee') }}" method="POST">
+            <input type="hidden" id="edit_original_e_code" name="original_e_code" value="">
+            <div class="modal-form-grid">
+                <div class="modal-name-grid">
+                    <div>
+                        <label for="edit_title">Title</label>
+                        <select id="edit_title" name="title" class="modal-input" required>
+                            <option value="Mr.">Mr.</option>
+                            <option value="Ms.">Ms.</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="edit_name">Name of the Employee</label>
+                        <input type="text" id="edit_name" name="name" class="modal-input" required>
+                    </div>
+                </div>
+                <div>
+                    <label for="edit_e_code">E.code (Unique)</label>
+                    <input type="text" id="edit_e_code" name="e_code" class="modal-input" required>
+                </div>
+                <div>
+                    <label for="edit_company">Company / Contract</label>
+                    <input type="text" id="edit_company" name="company" class="modal-input" required>
+                </div>
+                <div>
+                    <label for="edit_doj">Date of Joining (DOJ)</label>
+                    <input type="date" id="edit_doj" name="doj" class="modal-input" required>
+                </div>
+                <div>
+                    <label for="edit_stage">Stage</label>
+                    <select id="edit_stage" name="stage" class="modal-input" required>
+                        <option value="">-- Select Stage --</option>
+                        {% for stage in stage_filter_list %}
+                            <option value="{{ stage }}">{{ stage }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <div class="form-actions" style="margin-top: 20px;">
+                <button type="submit" class="button">Save Changes</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // This is the existing script for the toggle button
+    const toggleBtn = document.getElementById('toggle-view-btn');
+    const attendanceView = document.getElementById('attendance-view');
+    const manageView = document.getElementById('manage-view');
+    const pageTitle = document.getElementById('page-title');
+
+    // --- MODIFIED: Check URL for view parameter ---
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('view') === 'manage') {
+        attendanceView.style.display = 'none';
+        manageView.style.display = 'block';
+        toggleBtn.textContent = 'Back to Tracker';
+        pageTitle.textContent = 'Manage Employees';
+    } else {
+        attendanceView.style.display = 'block';
+        manageView.style.display = 'none';
+        toggleBtn.textContent = 'Manage Employees';
+        pageTitle.textContent = 'Worker Attendance';
+    }
+    // --- END MODIFICATION ---
+
+    toggleBtn.addEventListener('click', function() {
+        if (attendanceView.style.display === 'none') {
+            attendanceView.style.display = 'block';
+            manageView.style.display = 'none';
+            toggleBtn.textContent = 'Manage Employees';
+            pageTitle.textContent = 'Worker Attendance';
+            // Clear 'view' param from URL
+            window.history.pushState({}, '', "{{ url_for('attendance') }}");
+        } else {
+            attendanceView.style.display = 'none';
+            manageView.style.display = 'block';
+            toggleBtn.textContent = 'Back to Tracker';
+            pageTitle.textContent = 'Manage Employees';
+        }
+    });
+
+    // --- Auto-saving attendance script ---
+    const attendanceTable = document.querySelector('.attendance-grid');
+    if (attendanceTable) {
+        attendanceTable.addEventListener('change', function(event) {
+            const selectElement = event.target;
+            // Ensure the event is from a select dropdown for attendance
+            if (selectElement.tagName === 'SELECT' && selectElement.name.startsWith('status-')) {
+                handleAttendanceChange(selectElement);
+            }
+        });
+    }
+
+    function handleAttendanceChange(selectElement) {
+        const nameParts = selectElement.name.split('-');
+        const postData = {
+            employee_code: nameParts[1],
+            date: nameParts.slice(2).join('-'), // Handles dates like YYYY-MM-DD
+            status: selectElement.value
+        };
+
+        // Visual feedback for "Saving..."
+        selectElement.style.transition = 'background-color 0.2s';
+        selectElement.style.backgroundColor = '#fef9c3'; // A light yellow
+
+        fetch("{{ url_for('mark_single_attendance') }}", {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(postData)
+        })
+        .then(response => response.json().then(data => ({ ok: response.ok, data })))
+        .then(({ ok, data }) => {
+            if (!ok) {
+                throw new Error(data.message || 'Server responded with an error.');
+            }
+            if (data.status === 'success') {
+                // Visual feedback for "Success"
+                selectElement.style.backgroundColor = '#dcfce7'; // A light green
+                // Reset class-based colors
+                selectElement.classList.remove('present', 'absent');
+                if (postData.status.startsWith('Present')) {
+                    selectElement.classList.add('present');
+                } else if (postData.status === 'Absent') {
+                    selectElement.classList.add('absent');
+                }
+
+                // Revert to the default background after a brief moment
+                setTimeout(() => {
+                   selectElement.style.backgroundColor = '';
+                }, 1200);
+
+                // --- NEW: Reload page on change to update roster ---
+                // Only reload if the change was to/from Absent or Present
+                if (postData.status.startsWith('Present') || postData.status === 'Absent' || postData.status === '') {
+                     window.location.reload();
+                }
+                // --- END NEW ---
+
+            } else {
+                throw new Error(data.message || 'An unknown error occurred.');
+            }
+        })
+        .catch(error => {
+            console.error('Error saving attendance:', error);
+            // Visual feedback for "Error"
+            selectElement.style.backgroundColor = '#fee2e2'; // A light red
+            alert('Failed to save attendance: ' + error.message);
+        });
+    }
+});
+</script>
+
+<script>
+    // --- Edit Modal Elements ---
+    const editModal = document.getElementById('edit-employee-modal');
+    const editCloseBtn = editModal.querySelector('.close-button');
+
+    // --- Add Modal Elements ---
+    const addModal = document.getElementById('add-employee-modal');
+    const addCloseBtn = addModal.querySelector('.close-button');
+    const showAddModalBtn = document.getElementById('show-add-modal-btn');
+
+    // --- Edit Modal Form Fields ---
+    const originalEcodeIn = document.getElementById('edit_original_e_code');
+    const ecodeIn = document.getElementById('edit_e_code');
+    const titleIn = document.getElementById('edit_title'); // NEW
+    const nameIn = document.getElementById('edit_name');
+    const companyIn = document.getElementById('edit_company');
+    const dojIn = document.getElementById('edit_doj');
+    const stageIn = document.getElementById('edit_stage');
+    const modalTitle = document.getElementById('edit-modal-title');
+
+    // This function is called by the "Edit" button on the table
+    function populateEditModal(btn) {
+        // 1. Get data directly from the button's dataset
+        const ecode = btn.dataset.ecode;
+        const title = btn.dataset.title;
+        const name = btn.dataset.name;
+        const company = btn.dataset.company;
+        const doj = btn.dataset.doj;
+        const stage = btn.dataset.stage;
+
+        // 2. Populate the form fields
+        document.getElementById('edit_original_e_code').value = ecode; // Hidden field
+        document.getElementById('edit_e_code').value = ecode;          // Visible field
+
+        // Handle Title dropdown
+        const titleSelect = document.getElementById('edit_title');
+        if(titleSelect) titleSelect.value = title;
+
+        document.getElementById('edit_name').value = name;
+        document.getElementById('edit_company').value = company;
+        document.getElementById('edit_doj').value = doj;
+
+        // Handle Stage dropdown
+        const stageSelect = document.getElementById('edit_stage');
+        if(stageSelect) stageSelect.value = stage;
+
+        // Update Modal Header
+        modalTitle.textContent = `Edit Employee: ${title} ${name}`;
+
+        // 3. Show the modal
+        editModal.style.display = 'block';
+    }
+
+    // --- ADD MODAL LOGIC ---
+    // Show the ADD modal when the button is clicked
+    if(showAddModalBtn) {
+        showAddModalBtn.onclick = function() {
+            // Clear the form in case it had old data
+            document.getElementById('add-employee-form').reset();
+            addModal.style.display = 'block';
+        }
+    }
+
+    // --- Close Logic for BOTH Modals ---
+    editCloseBtn.onclick = function() {
+        editModal.style.display = 'none';
+    }
+
+    addCloseBtn.onclick = function() {
+        addModal.style.display = 'none';
+    }
+
+    // Close modals if user clicks outside of them
+    window.onclick = function(event) {
+        if (event.target == editModal) {
+            editModal.style.display = 'none';
+        }
+        if (event.target == addModal) {
+            addModal.style.display = 'none';
+        }
+    }
+</script>
+{% endblock %}

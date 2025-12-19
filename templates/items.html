@@ -1,0 +1,391 @@
+{% extends "layout.html" %}
+
+{% block title %}Manage Items{% endblock %}
+
+{% block content %}
+<style>
+    /* Make buttons in the table smaller and more compact */
+    .button-small {
+        padding: 4px 8px !important;
+        font-size: 0.75rem !important;
+        line-height: 1.2;
+        height: auto !important;
+        min-width: 60px;
+    }
+
+    /* Adjust the Actions column to fit buttons neatly */
+    td.action-buttons {
+        white-space: nowrap;
+        padding: 5px !important;
+        text-align: center;
+    }
+
+    td.action-buttons .button,
+    td.action-buttons form {
+        display: inline-block;
+        margin: 0 2px;
+    }
+
+    /* Style for the new Select dropdowns to look consistent */
+    select.modal-input {
+        appearance: none; /* Remove default arrow in some browsers for custom styling */
+        background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+        background-repeat: no-repeat;
+        background-position: right 10px center;
+        background-size: 1em;
+        padding-right: 30px;
+        cursor: pointer;
+    }
+</style>
+
+<div class="header">
+    <h1>Item Master Data</h1>
+    <div class="actions" style="display: flex; align-items: center; gap: 10px;">
+        <form action="{{ url_for('manage_items') }}" method="GET" style="display: flex; align-items: center; gap: 8px; margin: 0;">
+            <input type="search" name="search" placeholder="Search Item Code or Desc..." value="{{ search_query }}" style="padding: 10px; height: 40px; border-radius: 5px; border: 1px solid var(--border-color);">
+            <button type="submit" class="button button-secondary" style="height: 40px; display: flex; align-items: center; justify-content: center;">Search</button>
+            {% if search_query %}
+                <a href="{{ url_for('manage_items') }}" class="button button-secondary" style="background-color: #6b7280; height: 40px; display: flex; align-items: center; justify-content: center; text-decoration: none;">Clear</a>
+            {% endif %}
+        </form>
+
+        <button id="show-add-modal-btn" class="button" style="height: 40px; display: flex; align-items: center; justify-content: center; margin-left: 10px;">Create New Item</button>
+    </div>
+</div>
+
+<div class="table-container">
+    <table>
+        <thead>
+            <tr>
+                <th style="width: 50px;">S.No</th>
+                <th>Item Code</th>
+                <th>Description</th>
+                <th>Category</th>
+                <th>Vertical</th>
+                <th>Model</th>
+                <th>Monthly Avg</th>
+                <th style="width: 220px; text-align: center;">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in items %}
+            <tr id="row-{{ item['Item code'] }}">
+                <td style="text-align: center;">{{ (pagination.page - 1) * pagination.per_page + loop.index }}</td>
+                <td style="font-weight: 600;">{{ item['Item code'] }}</td>
+                <td>{{ item['Description'] }}</td>
+                <td>{{ item['Category'] }}</td>
+                <td>{{ item['Vertical'] }}</td>
+                <td>{{ item['Model'] }}</td>
+                <td style="text-align: center;">{{ item['MonthlyAvg'] }}</td>
+
+                <td class="action-buttons">
+                    <button class="button button-small"
+                        onclick="openEditModal(this)"
+                        data-code="{{ item['Item code'] }}"
+                        data-desc="{{ item['Description'] }}"
+                        data-cat="{{ item['Category'] }}"
+                        data-vert="{{ item['Vertical'] }}"
+                        data-type="{{ item['Type'] }}"
+                        data-model="{{ item['Model'] }}"
+                        data-monthly="{{ item['MonthlyAvg'] }}"
+                        data-daily="{{ item['Daily Max Plan'] }}"
+                        data-maxinv="{{ item['Max Inv'] }}"
+                        data-rpl="{{ item['RPL days to Delivery'] }}">
+                        Edit Info
+                    </button>
+
+                    <button class="button button-small" style="background-color: #0284c7;"
+                        onclick="openWipModal(this)"
+                        data-code="{{ item['Item code'] }}"
+                        data-desc="{{ item['Description'] }}"
+                        {# Loop through stages to add their data dynamically #}
+                        {% for stage in stages %}
+                            data-stage-{{ stage|replace(' ', '_') }}="{{ item.get(stage, 0) }}"
+                        {% endfor %}
+                        >
+                        Edit WIP
+                    </button>
+
+                    <form action="{{ url_for('delete_item') }}" method="POST" onsubmit="return confirm('Delete item {{ item['Item code'] }}? This cannot be undone.');" style="display:inline;">
+                        <input type="hidden" name="item_code" value="{{ item['Item code'] }}">
+                        <button type="submit" class="button button-small button-danger">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="8" class="placeholder">No items found.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{% if pagination and pagination.total_pages > 1 %}
+<nav class="pagination-container">
+    <ul class="pagination">
+        <li class="page-item {% if not pagination.has_prev %}disabled{% endif %}">
+            <a class="page-link" href="{{ url_for('manage_items', page=pagination.prev_num, search=search_query) }}">Previous</a>
+        </li>
+        <li class="page-item disabled">
+            <span class="page-link">Page {{ pagination.page }} of {{ pagination.total_pages }}</span>
+        </li>
+        <li class="page-item {% if not pagination.has_next %}disabled{% endif %}">
+            <a class="page-link" href="{{ url_for('manage_items', page=pagination.next_num, search=search_query) }}">Next</a>
+        </li>
+    </ul>
+</nav>
+{% endif %}
+
+<div id="add-item-modal" class="modal">
+    <div class="modal-content">
+        <span class="close-button">&times;</span>
+        <h3>Create New Item</h3>
+        <form action="{{ url_for('add_item') }}" method="POST">
+            <div class="modal-form-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                <div style="grid-column: span 2;">
+                    <label>Item Code (Unique)</label>
+                    <input type="text" name="item_code" class="modal-input" required>
+                </div>
+
+                <div style="grid-column: span 2;">
+                    <label>Description</label>
+                    <select name="description" class="modal-input" required>
+                        <option value="" disabled selected>-- Select Description --</option>
+                        <option value="AOS Tank">AOS Tank</option>
+                        <option value="Air Receiver">Air Receiver</option>
+                    </select>
+                </div>
+
+                <div>
+                    <label>Vertical</label>
+                    <select name="vertical" class="modal-input">
+                        <option value="" disabled selected>-- Select --</option>
+                        <option value="DPSAC">DPSAC</option>
+                        <option value="ENCAP">ENCAP</option>
+                        <option value="LEPSAC">LEPSAC</option>
+                        <option value="RCD">RCD</option>
+                        <option value="ROTAIR">ROTAIR</option>
+                        <option value="SEPSAC">SEPSAC</option>
+                    </select>
+                </div>
+
+                <div>
+                    <label>Category</label>
+                    <select name="category" class="modal-input">
+                        <option value="" disabled selected>-- Select --</option>
+                        <option value="Stranger">Stranger</option>
+                        <option value="Runner">Runner</option>
+                        <option value="Milk Run">Milk Run</option>
+                        <option value="Repeater">Repeater</option>
+                    </select>
+                </div>
+
+                <div>
+                    <label>Type</label>
+                    <select name="type" class="modal-input">
+                        <option value="" disabled selected>-- Select --</option>
+                        <option value="Lean">Lean</option>
+                        <option value="Non Lean">Non Lean</option>
+                    </select>
+                </div>
+
+                <div><label>Model</label><input type="text" name="model" class="modal-input"></div>
+                <div><label>Monthly Avg</label><input type="number" step="0.01" name="monthly_avg" class="modal-input"></div>
+                <div><label>Daily Max Plan</label><input type="number" name="daily_max" class="modal-input"></div>
+                <div><label>Max Inventory</label><input type="number" name="max_inv" class="modal-input"></div>
+                <div><label>RPL Days</label><input type="number" name="rpl_days" class="modal-input"></div>
+            </div>
+            <div class="form-actions"><button type="submit" class="button">Create Item</button></div>
+        </form>
+    </div>
+</div>
+
+<div id="edit-item-modal" class="modal">
+    <div class="modal-content">
+        <span class="close-button">&times;</span>
+        <h3>Edit Item Information</h3>
+        <form action="{{ url_for('edit_item') }}" method="POST">
+            <input type="hidden" id="edit_original_code" name="original_item_code">
+
+            <div class="modal-form-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                <div><label>Item Code</label><input type="text" id="edit_code" name="item_code" class="modal-input" required></div>
+
+                <div>
+                    <label>Description</label>
+                    <select id="edit_desc" name="description" class="modal-input" required>
+                        <option value="" disabled selected>-- Select Description --</option>
+                        <option value="AOS Tank">AOS Tank</option>
+                        <option value="Air Receiver">Air Receiver</option>
+                    </select>
+                </div>
+
+                <div>
+                    <label>Vertical</label>
+                    <select id="edit_vert" name="vertical" class="modal-input">
+                        <option value="" disabled selected>-- Select --</option>
+                        <option value="DPSAC">DPSAC</option>
+                        <option value="ENCAP">ENCAP</option>
+                        <option value="LEPSAC">LEPSAC</option>
+                        <option value="RCD">RCD</option>
+                        <option value="ROTAIR">ROTAIR</option>
+                        <option value="SEPSAC">SEPSAC</option>
+                    </select>
+                </div>
+
+                <div>
+                    <label>Category</label>
+                    <select id="edit_cat" name="category" class="modal-input">
+                        <option value="" disabled selected>-- Select --</option>
+                        <option value="Stranger">Stranger</option>
+                        <option value="Runner">Runner</option>
+                        <option value="Milk Run">Milk Run</option>
+                        <option value="Repeater">Repeater</option>
+                    </select>
+                </div>
+
+                <div>
+                    <label>Type</label>
+                    <select id="edit_type" name="type" class="modal-input">
+                        <option value="" disabled selected>-- Select --</option>
+                        <option value="Lean">Lean</option>
+                        <option value="Non Lean">Non Lean</option>
+                    </select>
+                </div>
+
+                <div><label>Model</label><input type="text" id="edit_model" name="model" class="modal-input"></div>
+                <div><label>Monthly Avg</label><input type="number" step="0.01" id="edit_monthly" name="monthly_avg" class="modal-input"></div>
+                <div><label>Daily Max Plan</label><input type="number" id="edit_daily" name="daily_max" class="modal-input"></div>
+                <div><label>Max Inventory</label><input type="number" id="edit_maxinv" name="max_inv" class="modal-input"></div>
+                <div><label>RPL Days</label><input type="number" id="edit_rpl" name="rpl_days" class="modal-input"></div>
+            </div>
+            <div class="form-actions"><button type="submit" class="button">Save Info</button></div>
+        </form>
+    </div>
+</div>
+
+<div id="wip-modal" class="modal">
+    <div class="modal-content" style="max-width: 500px;">
+        <span class="close-button">&times;</span>
+        <h3>Update WIP Quantities</h3>
+        <p id="wip-modal-subtitle" style="color: #666; font-size: 0.9em; margin-bottom: 15px;"></p>
+
+        <form action="{{ url_for('edit_item') }}" method="POST">
+            <input type="hidden" id="wip_original_code" name="original_item_code">
+
+            <div class="wip-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; max-height: 400px; overflow-y: auto;">
+                {% for stage in stages %}
+                <div>
+                    <label style="font-size: 0.85rem; color: #555;">{{ stage }}</label>
+                    <input type="number"
+                           id="stage_input_{{ stage|replace(' ', '_') }}"
+                           name="{{ stage }}"
+                           class="modal-input"
+                           {% if stage == 'Not Started' %}
+                               readonly
+                               style="background-color: #e9ecef; color: #6c757d; cursor: not-allowed;"
+                               title="This field cannot be edited manually"
+                           {% else %}
+                               style="background-color: #fffaf8;"
+                           {% endif %}
+                    >
+                </div>
+                {% endfor %}
+            </div>
+
+            <div class="form-actions" style="margin-top: 20px;">
+                <button type="submit" class="button" style="background-color: #0284c7;">Update Quantities</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+    // --- 1. Safely Load Stages from Python ---
+    const allStages = {{ stages | tojson | default('[]') }};
+
+    // --- Modal Logic ---
+    const addModal = document.getElementById('add-item-modal');
+    const editModal = document.getElementById('edit-item-modal');
+    const wipModal = document.getElementById('wip-modal');
+    const addBtn = document.getElementById('show-add-modal-btn');
+
+    // Safe Event Listeners
+    if (addBtn && addModal) {
+        addBtn.onclick = () => addModal.style.display = "block";
+    }
+
+    document.querySelectorAll('.close-button').forEach(btn => {
+        btn.onclick = function() {
+            const modal = this.closest('.modal');
+            if (modal) modal.style.display = "none";
+        }
+    });
+
+    window.onclick = (event) => {
+        if (addModal && event.target == addModal) addModal.style.display = "none";
+        if (editModal && event.target == editModal) editModal.style.display = "none";
+        if (wipModal && event.target == wipModal) wipModal.style.display = "none";
+    }
+
+    // --- 2. Edit Info Modal (Attached to window) ---
+    window.openEditModal = function(btn) {
+        if (!editModal) return;
+
+        // Set the original item code (hidden field)
+        const hiddenInput = document.getElementById('edit_original_code');
+        if (hiddenInput) hiddenInput.value = btn.dataset.code;
+
+        // Helper function to safely set values
+        const setValue = (id, val) => {
+            const el = document.getElementById(id);
+            if (el) el.value = val || '';
+        };
+
+        setValue('edit_code', btn.dataset.code);
+        setValue('edit_desc', btn.dataset.desc);
+        setValue('edit_vert', btn.dataset.vert);
+        setValue('edit_cat', btn.dataset.cat);
+        setValue('edit_type', btn.dataset.type);
+        setValue('edit_model', btn.dataset.model);
+        setValue('edit_monthly', btn.dataset.monthly);
+        setValue('edit_daily', btn.dataset.daily);
+        setValue('edit_maxinv', btn.dataset.maxinv);
+        setValue('edit_rpl', btn.dataset.rpl);
+
+        editModal.style.display = "block";
+    }
+
+    // --- 3. WIP Edit Modal (Attached to window) ---
+    window.openWipModal = function(btn) {
+        if (!wipModal) return;
+
+        // Set hidden item code
+        const hiddenInput = document.getElementById('wip_original_code');
+        if (hiddenInput) hiddenInput.value = btn.dataset.code;
+
+        // Set Title text
+        const subtitle = document.getElementById('wip-modal-subtitle');
+        if (subtitle) subtitle.textContent = `Item: ${btn.dataset.code} - ${btn.dataset.desc}`;
+
+        // Dynamic Stage Population
+        allStages.forEach(stageName => {
+            // Match the ID format used in HTML generation (spaces replaced by underscores)
+            const stageKey = stageName.replace(/ /g, '_');
+            const inputId = 'stage_input_' + stageKey;
+            const el = document.getElementById(inputId);
+
+            // Construct the data attribute name (e.g. data-stage-Long_seam)
+            const attrName = 'data-stage-' + stageKey;
+            const val = btn.getAttribute(attrName);
+
+            if (el) {
+                el.value = val || 0;
+            }
+        });
+
+        wipModal.style.display = "block";
+    }
+</script>
+{% endblock %}
