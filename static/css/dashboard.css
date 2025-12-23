@@ -1,0 +1,63 @@
+.dashboard-section { margin-top: -20px; margin-bottom: 10px; }
+.stage-cards-container { display: grid; grid-template-columns: repeat(13, minmax(0, 1fr)); gap: 5px; margin-top: 10px; }
+.stage-card { background-color: #fff; border: 1px solid #000; border-radius: 6px; padding: 8px 4px; display: flex; flex-direction: column; justify-content: space-around; align-items: center; text-align: center; min-height: 55px; }
+.stage-card:first-child { grid-column: span 1; background-color: #e5e7eb; border: 1px solid #374151; }
+.stage-card .count { font-size: 1.5rem; font-weight: 600; line-height: 1; display: block; width: 100%; }
+.stage-card .stage-name { font-size: 0.65rem; text-align: center; white-space: normal; word-break: break-word; line-height: 1.1; }
+
+.dashboard-tables-container, .details-view-wrapper { display: flex; align-items: flex-start; gap: 10px; justify-content: center; }
+.dashboard-tables-container .table-wrapper, .details-view-wrapper .table-container { flex-shrink: 0; }
+.dashboard-tables-container table, .details-view-wrapper table { font-size: 0.75rem; width: auto; border-collapse: collapse; }
+
+.dashboard-tables-container .table-wrapper:last-child table { font-size: 0.8rem; width: 100%; }
+.dashboard-tables-container .table-wrapper:last-child { flex-shrink: 1; min-width: 0; }
+
+.dashboard-tables-container th, .dashboard-tables-container td, .details-view-wrapper th, .details-view-wrapper td { padding: 0px 3px; font-size: 0.84rem; text-align: center; white-space: nowrap; border: 1px solid #000; line-height: 0.98; }
+
+.dashboard-tables-container .table-wrapper:last-child th { padding: 8px 10px; white-space: normal; vertical-align: middle; }
+.dashboard-tables-container .table-wrapper:last-child td { padding: 7px 10px; white-space: normal; vertical-align: middle; }
+
+.dashboard-tables-container .table-wrapper:last-child th:nth-child(2), .dashboard-tables-container .table-wrapper:last-child th:nth-child(3), .dashboard-tables-container .table-wrapper:last-child th:nth-child(4) { max-width: 65px; }
+
+.dashboard-tables-container td.align-left, .details-view-wrapper td.align-left { text-align: left; }
+.description-col { max-width: 180px; white-space: normal; }
+.total-row td { font-weight: bold; border-top: 2px solid #000; background-color: #f8f9fa; }
+.table-title { font-size: 0.9rem; font-weight: 600; padding: 4px; background-color: #e9ecef; }
+
+.clickable-row { cursor: pointer; }
+.clickable-row:hover { background-color: #e9ecef; }
+.selected-row { background-color: #dbeafe !important; font-weight: bold; }
+
+.draggable-item { cursor: grab; }
+.draggable-item:active { cursor: grabbing; }
+.draggable-item.dragging { opacity: 0.5; background-color: #f0f0f0; }
+.drop-target.drag-over { background-color: #d1e7dd !important; border: 2px dashed #0f5132; }
+
+#failure-header-toggle { cursor: pointer; user-select: none; background-color: #fee2e2; color: #991b1b; transition: background-color 0.2s; }
+#failure-header-toggle:hover { background-color: #fecaca; }
+#failure-header-toggle.active { background-color: #ef4444; color: white; }
+
+.reason-cell { min-width: auto; width: 80px; padding: 2px !important; vertical-align: middle; }
+.reason-btn { padding: 3px 8px; font-size: 0.75em; width: 100%; background-color: #ffc107; color: #333; border: 1px solid #d39e00; display: none; }
+.reason-btn.has-reason { background-color: #fffbeb; border-color: #fcd34d; color: #78350f; }
+.reason-btn:hover { background-color: #e0a800; }
+
+#plan-table-body.show-failures .reason-btn { display: inline-block; }
+
+#failure-reason-modal label { display: block; margin-bottom: 5px; font-weight: 500; }
+#failure-reason-modal select { width: 100%; padding: 8px; }
+#failure-reason-modal .modal-info { margin-bottom: 15px; font-size: 0.9em; color: var(--text-secondary); }
+#failure-reason-modal .modal-info strong { color: var(--text-primary); }
+
+#fullscreen-toggle { position: fixed; top: 75px; right: 30px; cursor: pointer; color: #888; z-index: 1050; }
+#fullscreen-toggle:hover { color: #000; }
+
+.details-view-wrapper > div { width: fit-content; margin: 0 auto; }
+.details-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 15px; padding-right: 30px; }
+.details-header h2 { margin: 0; }
+
+
+    /* Force the body to fit the screen exactly */
+    html, body {
+        font-size: 15px; /* Reduce base font size */
+    }

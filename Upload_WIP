@@ -1,0 +1,251 @@
+import pandas as pd
+import numpy as np
+import pyodbc
+
+# ==========================================
+# 1. CONFIGURATION
+# ==========================================
+file_path = 'Combined_WIP_Stock_Merged.xlsx'  # Your Excel file
+server = r'DESKTOP-29MHU7D\MSSQLSERVER01'
+database = 'ELGI_Dash'
+
+# Columns mapping (Excel Header -> DB Column)
+fixed_stages_map = {
+    'PDI': 'PDI',
+    'PC': 'Powder coating',
+    'Hydro': 'Hydro Testing'
+}
+
+# Stages to split the REMAINDER into (FG Excluded)
+split_stages_db_cols = [
+    'Long seam',
+    'Dish fit up',
+    'Cirseam welding',
+    'Part assembly',
+    'Full welding'
+]
+
+def split_quantity_randomly(total_qty, n_buckets):
+    """Splits a total integer quantity randomly into n buckets."""
+    if total_qty <= 0: return [0] * n_buckets
+    return np.random.multinomial(total_qty, [1 / n_buckets] * n_buckets)
+
+# ==========================================
+# 2. READ EXCEL FILE
+# ==========================================
+print(f"Reading {file_path}...")
+try:
+    df = pd.read_excel(file_path, engine='openpyxl')
+except Exception as e:
+    print(f"Error reading Excel: {e}")
+    exit()
+
+# Clean up column names
+df.columns = df.columns.str.strip()
+
+# Ensure required columns exist
+required_cols = ['Item code', 'WIP'] + list(fixed_stages_map.keys())
+missing_cols = [c for c in required_cols if c not in df.columns]
+if missing_cols:
+    print(f"Error: Missing columns in Excel: {missing_cols}")
+    exit()
+
+# Clean Item code
+df['Item code'] = df['Item code'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+
+# Add leading zero if missing
+df['Item code'] = df['Item code'].apply(lambda x: '0' + x if not x.startswith('0') else x)
+
+# Clean numeric columns
+numeric_cols = ['WIP'] + list(fixed_stages_map.keys())
+for col in numeric_cols:
+    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
+
+excel_data = df.set_index('Item code').to_dict('index')
+
+print(f"Loaded {len(excel_data)} items from Excel.")
+
+# ==========================================
+# 3. CONNECT TO DATABASE & FETCH MASTERS
+# ==========================================
+drivers = [d for d in pyodbc.drivers()]
+driver = 'ODBC Driver 17 for SQL Server' if 'ODBC Driver 17 for SQL Server' in drivers else 'SQL Server'
+connection_string = f'DRIVER={{{driver}}};SERVER={server};DATABASE={database};Trusted_Connection=yes;'
+
+try:
+    print(f"Connecting to {server}...")
+    conn = pyodbc.connect(connection_string)
+    cursor = conn.cursor()
+    
+    print("Fetching all existing item codes from database...")
+    cursor.execute("SELECT [Item code] FROM master")
+    db_items = {str(row[0]).strip() for row in cursor.fetchall()}
+    print(f"Found {len(db_items)} items in database.")
+
+    # ==========================================
+    # 4. INSERT NEW ITEMS (Full Schema)
+    # ==========================================
+    new_items = set(excel_data.keys()) - db_items
+    
+    if new_items:
+        print(f"Found {len(new_items)} NEW items in Excel. Inserting into Master with default values...")
+        
+        # Define all columns based on your provided SELECT statement
+        # We exclude [Item code] from this list as it's the primary key/identifier we handle separately
+        cols_config = {
+            'Vertical': 'None',
+            'Description': 'None',
+            'Model': 'None',
+            'Category': 'None',
+            'Type': 'None',
+            'MonthlyAvg': 0,
+            'Daily Max Plan': 0,
+            'Daily Suggested Release Plan': 0,
+            'Modified Release plan': 0,
+            'Max Inv': 0,
+            'Pending': 0,
+            'RPL days to Delivery': 0,
+            'Monthly Dispatch': 0,
+            'Live Dispatch': 0,
+            # Inventory Stages (Will be overwritten by calc)
+            'Long seam': 0, 'Dish fit up': 0, 'Cirseam welding': 0, 'Part assembly': 0, 
+            'Full welding': 0, 'Hydro Testing': 0, 'Powder coating': 0, 'PDI': 0, 'FG': 0, 'Total Inv': 0,
+            # Cycle Times
+            'Long_seam_CT': 0, 'Dish_fit_up_CT': 0, 'Sub_Assembly_CT': 0, 'Cirseam_welding_CT': 0, 
+            'Part_assembly_CT': 0, 'Full_welding_CT': 0, 'Robo_Welding_CT': 0, 
+            'Hydro_Testing_CT': 0, 'Powder_coating_CT': 0, 'PDI_CT': 0,
+            # Misc
+            'TriggerAccumulator': 0,
+            'Not Started': 0,
+            'assembly': 0,
+            'LastPlanDate': None,
+            'TodayCalculatedTrigger': 0,
+            'Next Pending': 0
+        }
+
+        # Construct the SQL
+        # [Item code] + keys from cols_config
+        all_cols = ['[Item code]'] + [f"[{k}]" for k in cols_config.keys()]
+        placeholders = ['?'] * len(all_cols)
+        
+        insert_sql = f"INSERT INTO [dbo].[master] ({', '.join(all_cols)}) VALUES ({', '.join(placeholders)})"
+        
+        insert_count = 0
+        for item_code in new_items:
+            data = excel_data[item_code]
+            
+            # 1. Calculate Inventory Splits
+            total_inv = data['WIP']
+            
+            # Map Fixed Stages
+            current_vals = cols_config.copy()
+            fixed_sum = 0
+            for excel_col, db_col in fixed_stages_map.items():
+                qty = data[excel_col]
+                current_vals[db_col] = qty
+                fixed_sum += qty
+            
+            # Map Split Stages
+            remainder = total_inv - fixed_sum
+            if remainder < 0: remainder = 0
+            splits = split_quantity_randomly(remainder, len(split_stages_db_cols))
+            
+            for i, stage in enumerate(split_stages_db_cols):
+                current_vals[stage] = int(splits[i])
+            
+            # Set Totals
+            current_vals['Total Inv'] = total_inv
+            current_vals['FG'] = 0 
+
+            # 2. Build Params List (Order must match cols_config)
+            params = [item_code] # First param
+            for col_name in cols_config.keys():
+                params.append(current_vals[col_name])
+            
+            cursor.execute(insert_sql, params)
+            insert_count += 1
+            
+            # Add to db_items so it's tracked for the next loop (if needed)
+            db_items.add(item_code)
+
+        print(f"Inserted {insert_count} new items with full schema defaults.")
+    else:
+        print("No new items to insert.")
+
+    # ==========================================
+    # 5. UPDATE EXISTING ITEMS
+    # ==========================================
+    print("Preparing updates for all items (Inventory Sync)...")
+    updates = []
+    
+    # Iterate through all items in DB to ensure inventory is synced or reset
+    for item_code in db_items:
+        row_update = {'ItemCode': item_code}
+        row_update['FG'] = 0 
+
+        if item_code in excel_data:
+            # --- CASE 1: Item found in Excel ---
+            data = excel_data[item_code]
+            
+            # 1. Total WIP
+            total_inv = data['WIP']
+            row_update['Total Inv'] = total_inv
+            
+            # 2. Fixed Stages (PDI, PC, Hydro)
+            fixed_sum = 0
+            for excel_col, db_col in fixed_stages_map.items():
+                qty = data[excel_col]
+                row_update[db_col] = qty
+                fixed_sum += qty
+            
+            # 3. Calculate Remainder
+            remainder = total_inv - fixed_sum
+            if remainder < 0: remainder = 0
+            
+            # 4. Split Remainder
+            splits = split_quantity_randomly(remainder, len(split_stages_db_cols))
+            for i, stage in enumerate(split_stages_db_cols):
+                row_update[stage] = int(splits[i])
+                
+        else:
+            # --- CASE 2: Item NOT in Excel (Missing) -> Reset Inventory ---
+            row_update['Total Inv'] = 0
+            
+            # Reset fixed stages
+            for db_col in fixed_stages_map.values():
+                row_update[db_col] = 0
+                
+            # Reset split stages
+            for stage in split_stages_db_cols:
+                row_update[stage] = 0
+        
+        updates.append(row_update)
+
+    # ==========================================
+    # 6. EXECUTE BATCH UPDATE
+    # ==========================================
+    print("Starting database inventory update...")
+    
+    cols_to_update = ['Total Inv'] + list(fixed_stages_map.values()) + split_stages_db_cols + ['FG']
+    
+    sql = f"UPDATE [dbo].[master] SET {', '.join([f'[{c}] = ?' for c in cols_to_update])} WHERE [Item code] = ?"
+    
+    count = 0
+    for row in updates:
+        params = [row[c] for c in cols_to_update]
+        params.append(row['ItemCode'])
+        
+        cursor.execute(sql, params)
+        count += 1
+        
+        if count % 100 == 0:
+            print(f"Updated {count}/{len(updates)} records...", end='\r')
+
+    conn.commit()
+    print(f"\nSuccessfully processed {count} records (Updates + Inserts).")
+
+except Exception as e:
+    print(f"Error: {e}")
+    if 'conn' in locals(): conn.rollback()
+finally:
+    if 'conn' in locals(): conn.close()

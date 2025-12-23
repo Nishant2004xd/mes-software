@@ -19,30 +19,56 @@
 
     <nav class="top-nav">
         <div class="nav-left">
-            <div class="nav-header">
-                <img src="{{ url_for('static', filename='images/ELGI.png') }}" alt="ELGI Logo" class="logo-img">
-            </div>
-
             <button id="sidebar-toggle" class="menu-btn" title="Toggle Menu">
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="menu-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="menu-icon">
                     <line x1="3" y1="12" x2="21" y2="12"></line>
                     <line x1="3" y1="6" x2="21" y2="6"></line>
                     <line x1="3" y1="18" x2="21" y2="18"></line>
                 </svg>
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="close-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="close-icon">
                     <line x1="18" y1="6" x2="6" y2="18"></line>
                     <line x1="6" y1="6" x2="18" y2="18"></line>
                 </svg>
             </button>
+            <div class="nav-header">
+                <img src="{{ url_for('static', filename='images/ELGI.png') }}" alt="ELGI Logo" class="logo-img">
+            </div>
         </div>
 
         <div class="nav-actions">
-            <a href="#" id="settings-btn" title="Settings & Uploads">
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather-icon">
-                    <circle cx="12" cy="12" r="3"></circle>
-                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-                </svg>
-            </a>
+            {% if request.endpoint == 'dashboard' %}
+                <div class="navbar-filter-group" style="display: flex; align-items: center; margin-right: 20px; border-right: 1px solid rgba(255,255,255,0.1); padding-right: 20px;">
+                    <label for="navbar-type-filter" style="color: #94a3b8; font-size: 0.8rem; font-weight: 600; margin-right: 10px; text-transform: uppercase;">Type</label>
+                    <select id="navbar-type-filter" style="background-color: #1e293b; color: #f8fafc; border: 1px solid #334155; border-radius: 4px; padding: 4px 8px; font-size: 0.85rem; outline: none; cursor: pointer;">
+                        <option value="">All</option>
+                        <option value="Lean">Lean</option>
+                        <option value="Non Lean">Non Lean</option>
+                    </select>
+                </div>
+            {% endif %}
+
+            <div class="profile-dropdown">
+                <div class="profile-menu">
+                    <div class="profile-avatar">
+                        {{ current_user.username[0]|upper if current_user.is_authenticated else 'G' }}
+                    </div>
+                    <div class="profile-info">
+                        <span class="profile-name">{{ current_user.name if current_user.is_authenticated else 'Guest' }}</span>
+                        <span class="profile-role">Manager</span>
+                    </div>
+                    <svg class="dropdown-arrow" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                </div>
+
+                <div class="dropdown-content">
+                    <div class="dropdown-header">
+                        <span class="user-email">{{ current_user.username if current_user.is_authenticated else 'Guest' }}</span>
+                    </div>
+                    <a href="{{ url_for('logout') }}" class="dropdown-item logout-item">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+                        Sign Out
+                    </a>
+                </div>
+            </div>
         </div>
     </nav>
 
@@ -101,98 +127,98 @@
     </main>
 
     <div id="settings-modal" class="modal">
-    <div class="modal-content" style="max-width: 600px;">
-        <span class="close-button">&times;</span>
-
-        <div class="header" style="border: none; margin-bottom: 10px; padding-bottom: 0;">
-            <h1 style="font-size: 1.5rem;">Manage Database</h1>
-        </div>
-
-        <div class="upload-section">
-            <h2>Pending Triggers File (Daily)</h2>
-            {% if last_triggers_upload_time %}
-                <div class="upload-status-indicator success" style="display: flex; justify-content: space-between; align-items: center;">
-                    <span>✅ Uploaded: {{ last_triggers_upload_time.strftime('%d-%b-%Y %I:%M %p') }}</span>
-
-                    <form action="{{ url_for('delete_triggers') }}" method="POST" onsubmit="return confirm('Are you sure you want to remove the uploaded triggers? This will reset Pending quantities to 0.');" style="margin: 0;">
-                        <button type="submit" class="button button-danger" style="padding: 4px 10px; font-size: 0.8rem;">Remove File</button>
-                    </form>
+        <div class="modal-content settings-modal-content">
+            <div class="modal-header settings-header">
+                <div class="header-text">
+                    <h2>System Data & Settings</h2>
+                    <p>Manage daily uploads and system configurations</p>
                 </div>
-            {% else %}
-                <div class="upload-status-indicator warning">
-                    ⚠️ Please upload the pending triggers file for today to generate a plan.
-                </div>
-            {% endif %}
+                <span class="close-button">&times;</span>
+            </div>
 
-            <p>Upload a CSV file with pending trigger data.</p>
-            <form action="{{ url_for('upload_triggers') }}" method="POST" enctype="multipart/form-data" class="upload-form-simple">
-                <input type="file" name="file" accept=".csv" required>
-                <button type="submit" class="button">Upload Triggers</button>
-            </form>
-        </div>
+            <div class="modal-body settings-body">
+                
+                <div class="settings-grid">
 
+                    <div class="settings-card">
+                        <div class="card-header">
+                            <div class="card-icon" style="background: #e0f2fe; color: #0284c7;">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                            </div>
+                            <div class="card-title">
+                                <h3>Pending Triggers</h3>
+                                <span class="card-subtitle">Daily Plan Generation</span>
+                            </div>
+                            
+                            {% if last_triggers_upload_time %}
+                                <div class="status-badge success"><span class="dot"></span> Active</div>
+                            {% else %}
+                                <div class="status-badge warning"><span class="dot"></span> Missing</div>
+                            {% endif %}
+                        </div>
+
+                        <div class="card-content">
+                            {% if last_triggers_upload_time %}
+                                <div class="upload-info success">
+                                    <div class="info-text">
+                                        <strong>File Uploaded</strong>
+                                        <span>{{ last_triggers_upload_time.strftime('%d %b, %I:%M %p') }}</span>
+                                    </div>
+                                    <form action="{{ url_for('delete_triggers') }}" method="POST" onsubmit="return confirm('Remove triggers?');">
+                                        <button type="submit" class="button button-small button-danger button-ghost">Remove</button>
+                                    </form>
+                                </div>
+                            {% else %}
+                                <div class="upload-info warning"><p>Upload daily CSV to generate today's plan.</p></div>
+                            {% endif %}
+
+                            <form action="{{ url_for('upload_triggers') }}" method="POST" enctype="multipart/form-data" class="modern-upload-form">
+                                <div class="file-input-wrapper">
+                                    <input type="file" name="file" id="trigger-file" accept=".csv" required onchange="updateFileName(this)">
+                                    <label for="trigger-file" class="file-label">
+                                        <span class="file-cta">Choose CSV</span>
+                                        <span class="file-name">No file selected</span>
+                                    </label>
+                                </div>
+                                <button type="submit" class="button button-primary upload-btn">Upload</button>
+                            </form>
+                        </div>
+                    </div>
+
+                    <div class="settings-card">
+                        <div class="card-header">
+                            <div class="card-icon" style="background: #dcfce7; color: #166534;">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="15" height="13"></rect><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"></polygon><circle cx="5.5" cy="18.5" r="2.5"></circle><circle cx="18.5" cy="18.5" r="2.5"></circle></svg>
+                            </div>
+                            <div class="card-title">
+                                <h3>Dispatch Log</h3>
+                                <span class="card-subtitle">Monthly Excel Upload</span>
+                            </div>
+                        </div>
+
+                        <div class="card-content">
+                            <div class="upload-info" style="background-color: #f8fafc; border: 1px solid #e2e8f0; color: #64748b;">
+                                <p style="margin:0;">Updates your dispatch details in the database</p>
+                            </div>
+
+                            <form action="{{ url_for('upload_dispatch') }}" method="POST" enctype="multipart/form-data" class="modern-upload-form">
+                                <div class="file-input-wrapper">
+                                    <input type="file" name="file" id="dispatch-file" accept=".xlsx, .xls" required onchange="updateFileName(this)">
+                                    <label for="dispatch-file" class="file-label">
+                                        <span class="file-cta">Choose Excel</span>
+                                        <span class="file-name">No file selected</span>
+                                    </label>
+                                </div>
+                                <button type="submit" class="button button-primary upload-btn">Upload</button>
+                            </form>
+                        </div>
+                    </div>
+
+                </div> </div>
         </div>
     </div>
     {% block scripts %}
-    <script>
-    document.addEventListener('DOMContentLoaded', function () {
-        // Flash banner logic
-        const banners = document.querySelectorAll('.banner');
-        banners.forEach((banner, index) => {
-            setTimeout(() => { banner.classList.add('show'); }, 100);
-            setTimeout(() => {
-                banner.classList.remove('show');
-                setTimeout(() => { banner.remove(); }, 600);
-            }, 5000);
-        });
-
-        // --- Sidebar Logic ---
-        const sidebarToggle = document.getElementById('sidebar-toggle');
-        // We now toggle a class on the body to handle the push effect
-        const body = document.body;
-
-        function toggleSidebar() {
-            body.classList.toggle('sb-open');
-        }
-
-        if (sidebarToggle) {
-            sidebarToggle.addEventListener('click', toggleSidebar);
-        }
-
-        // --- Settings Modal Script ---
-        const settingsModal = document.getElementById('settings-modal');
-        const settingsBtn = document.getElementById('settings-btn');
-        // Also the sidebar settings link can trigger it
-        const sidebarSettingsBtn = document.getElementById('sidebar-settings-btn');
-
-        const openSettings = function(e) {
-            e.preventDefault();
-            settingsModal.style.display = 'block';
-            if (body.classList.contains('sb-open')) {
-                toggleSidebar(); // Close sidebar if open
-            }
-        };
-
-        if (settingsModal) {
-            const settingsCloseBtn = settingsModal.querySelector('.close-button');
-
-            if (settingsBtn) settingsBtn.addEventListener('click', openSettings);
-            if (sidebarSettingsBtn) sidebarSettingsBtn.addEventListener('click', openSettings);
-
-            if (settingsCloseBtn) {
-                settingsCloseBtn.onclick = function() {
-                    settingsModal.style.display = 'none';
-                }
-            }
-
-            window.addEventListener('click', function(event) {
-                if (event.target == settingsModal) {
-                    settingsModal.style.display = 'none';
-                }
-            });
-        }
-    });
-    </script>
+    <script src="{{ url_for('static', filename='js/layout.js') }}?v=3"></script>
     {% endblock %}
 
 </body>

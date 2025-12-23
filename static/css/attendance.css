@@ -1,0 +1,443 @@
+/* =========================================
+   ATTENDANCE & ROSTER - CLEAN LAYOUT
+   ========================================= */
+
+:root {
+    --primary-color: #ea580c;
+    --primary-hover: #c2410c;
+    --bg-surface: #ffffff;
+    --bg-subtle: #f8fafc;
+    --border-light: #e2e8f0;
+    --header-bg: #f8fafc;
+    --header-text: #334155;
+    --text-main: #0f172a;
+    --text-secondary: #64748b;
+    --text-muted: #94a3b8;
+}
+
+/* --- Layout --- */
+.page-container {
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - 85px);
+    overflow: hidden;
+    padding: 0 4px;
+}
+
+.content-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+    display: flex;
+    flex-direction: column;
+    flex-grow: 1;
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* --- 1. Header --- */
+.attendance-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border-light);
+    background-color: #fff;
+    flex-shrink: 0;
+}
+
+.attendance-header h1 {
+    margin: 0;
+    font-size: 1.25rem;
+    font-weight: 800;
+    color: var(--text-main);
+    letter-spacing: -0.025em;
+}
+
+.header-actions {
+    display: flex;
+    gap: 10px;
+}
+
+/* --- 2. Toolbar (The Control Bar) --- */
+.controls-toolbar {
+    padding: 10px 20px;
+    background-color: #fff;
+    border-bottom: 1px solid var(--border-light);
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    gap: 15px;
+    height: 60px; /* Fixed height for consistency */
+    box-sizing: border-box;
+}
+
+/* Week Nav (Left Side) */
+.week-nav {
+    display: flex;
+    align-items: center;
+    background: #fff;
+    border: 1px solid var(--border-light);
+    border-radius: 6px;
+    padding: 2px;
+}
+
+.nav-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: background 0.2s;
+}
+.nav-btn:hover { background-color: var(--bg-subtle); color: var(--primary-color); }
+
+.week-display {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-main);
+    padding: 0 15px;
+    min-width: 160px;
+    text-align: center;
+    user-select: none;
+    border-left: 1px solid var(--border-light);
+    border-right: 1px solid var(--border-light);
+    line-height: 32px;
+}
+
+/* Right Controls Group (Pushed to right) */
+.controls-right {
+    margin-left: auto; /* This pushes filters to the right */
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+/* Filter Items */
+.control-item {
+    display: flex;
+    align-items: center;
+    background: #fff;
+    border: 1px solid var(--border-light);
+    border-radius: 6px;
+    padding: 0 4px 0 12px;
+    height: 36px; /* Consistent Height */
+}
+
+.control-label {
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: var(--text-muted);
+    margin-right: 8px;
+    text-transform: uppercase;
+}
+
+.compact-select, .compact-date {
+    border: none;
+    font-size: 0.85rem;
+    color: var(--text-main);
+    outline: none;
+    background: transparent;
+    height: 100%;
+    cursor: pointer;
+    font-weight: 500;
+    padding-right: 5px;
+}
+
+.icon-btn {
+    width: 28px;
+    height: 28px;
+    border: none;
+    background: var(--bg-subtle);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-left: 5px;
+}
+.icon-btn:hover { background: var(--primary-color); color: white; }
+
+/* --- 3. The Grid (Table Container) --- */
+.grid-container {
+    flex: 1; /* Take remaining height */
+    overflow: auto; /* Scroll internally */
+    position: relative;
+    width: 100%;
+    background-color: #fff;
+}
+
+/* Force table to align left and top */
+.attendance-table {
+    width: 100%; 
+    border-collapse: separate;
+    border-spacing: 0;
+    margin: 0; /* Remove any default margins */
+}
+
+/* --- Sticky Headers --- */
+.attendance-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background-color: var(--header-bg);
+    color: var(--header-text);
+    border-bottom: 1px solid var(--border-light);
+    padding: 8px;
+    text-align: center;
+    vertical-align: middle;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+}
+
+/* Top Left Corner (Employee Name Header) */
+.attendance-table thead th:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 30; /* Stays on top of everything */
+    background-color: var(--header-bg);
+    border-right: 1px solid var(--border-light);
+    text-align: left;
+    padding-left: 15px;
+    width: 250px;
+    min-width: 250px;
+}
+
+/* Date Header Content */
+.date-header-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    line-height: 1.1;
+}
+.dh-day { font-size: 0.7rem; font-weight: 600; text-transform: uppercase; color: var(--text-muted); }
+.dh-date { font-size: 1.1rem; font-weight: 700; color: var(--text-main); }
+
+/* --- Table Rows --- */
+.attendance-table tbody td {
+    padding: 6px;
+    border-bottom: 1px solid var(--border-light);
+    border-right: 1px solid var(--border-light);
+    vertical-align: middle;
+    text-align: center;
+    height: 50px;
+    background-color: #fff;
+}
+
+/* Sticky First Column (Names) */
+.attendance-table tbody td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 10;
+    background-color: #fff;
+    border-right: 1px solid var(--border-light);
+    text-align: left;
+    padding-left: 15px;
+    box-shadow: 2px 0 5px -2px rgba(0,0,0,0.1);
+}
+
+.emp-name { font-weight: 600; color: var(--text-main); display: block; font-size: 0.9rem; }
+.emp-id { font-size: 0.75rem; color: var(--text-muted); display: block; margin-top: 2px; font-family: monospace; }
+
+/* Cell Types */
+.stage-cell {
+    background-color: #fafafa !important;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    text-align: left !important;
+    padding-left: 10px !important;
+}
+
+.weekend { background-color: #f8fafc !important; }
+.holiday { background-color: #eff6ff !important; color: #1e40af; font-weight: 600; }
+
+/* -----------------------------------
+   STATUS DROPDOWNS (THE FIX) 
+   -----------------------------------
+*/
+.status-select {
+    width: 100%;
+    height: 34px;
+    border: 1px solid #cbd5e1; /* VISIBLE Border */
+    border-radius: 6px;
+    text-align: center;
+    font-weight: 600;
+    font-size: 0.85rem;
+    cursor: pointer;
+    appearance: none;
+    background-color: #fff; /* White background by default */
+    color: #475569; /* Darker text for visibility */
+    transition: all 0.2s;
+}
+
+/* Hover State */
+.status-select:hover {
+    border-color: var(--primary-color);
+    background-color: #fff7ed; /* Light orange tint */
+}
+
+/* Focus State */
+.status-select:focus { 
+    outline: none; 
+    border-color: var(--primary-color); 
+    box-shadow: 0 0 0 2px rgba(234, 88, 12, 0.1);
+}
+
+/* Colored States (Present/Absent) */
+.status-select.present { background-color: #dcfce7; color: #15803d; border: 1px solid #bbf7d0; }
+.status-select.absent { background-color: #fee2e2; color: #b91c1c; border: 1px solid #fecaca; }
+
+/* --- Manage View --- */
+#manage-view { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+.manage-container { padding: 20px; overflow: auto; flex: 1; }
+.manage-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+
+#manage-table { width: 100%; border-collapse: collapse; }
+#manage-table th { text-align: left; background: var(--bg-subtle); color: var(--text-secondary); padding: 12px; border-bottom: 2px solid var(--border-light); font-size: 0.8rem; text-transform: uppercase; }
+#manage-table td { padding: 12px; border-bottom: 1px solid var(--border-light); font-size: 0.9rem; }
+#manage-table tr:hover { background-color: var(--bg-subtle); }
+
+.stage-badge { background: #f1f5f9; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; color: #64748b; border: 1px solid #e2e8f0; font-weight: 500; }
+
+/* --- Buttons --- */
+.button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 16px;
+    height: 36px;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 0.85rem;
+    border: 1px solid transparent;
+    cursor: pointer;
+    text-decoration: none;
+    transition: all 0.2s;
+    white-space: nowrap;
+    gap: 8px;
+}
+.button-primary { background-color: var(--primary-color); color: white; }
+.button-primary:hover { background-color: var(--primary-hover); transform: translateY(-1px); }
+.button-secondary { background-color: #fff; border: 1px solid var(--border-light); color: var(--text-secondary); }
+.button-secondary:hover { border-color: var(--text-muted); color: var(--text-main); background-color: var(--bg-subtle); }
+.button-small { height: 28px; padding: 0 10px; font-size: 0.75rem; }
+.button-danger { background-color: #fef2f2; color: #ef4444; border: 1px solid #fecaca; }
+.button-danger:hover { background-color: #fee2e2; border-color: #ef4444; }
+
+/* Modal Grid */
+.modal-form-grid { display: grid; grid-template-columns: 1fr; gap: 15px; }
+.modal-name-grid { display: grid; grid-template-columns: 80px 1fr; gap: 10px; }
+.modal-input { width: 100%; padding: 10px; border: 1px solid var(--border-light); border-radius: 6px; font-size: 0.9rem; box-sizing: border-box; }
+.form-actions { text-align: right; margin-top: 20px; padding-top: 15px; border-top: 1px solid var(--border-light); }
+
+/* =========================================
+   ATTENDANCE MODAL STYLES
+   ========================================= */
+
+.attendance-modal-content {
+    padding: 0;
+    border: none;
+    border-radius: 12px;
+    background-color: #ffffff;
+    max-width: 500px;
+    overflow: hidden;
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+}
+
+/* Reusing generic header style from settings if available, 
+   but ensuring specific overrides here just in case */
+.settings-header {
+    background-color: #fff;
+    padding: 20px 24px;
+    border-bottom: 1px solid #e2e8f0;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+}
+
+.settings-body {
+    padding: 24px;
+}
+
+/* Grid Layout for Form */
+.modal-form-grid {
+    display: grid;
+    grid-template-columns: 1fr 2fr; /* Title takes less space, Name takes more */
+    gap: 16px;
+    margin-bottom: 0;
+}
+
+.form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+/* Form Inputs */
+.modal-label {
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+}
+
+.modal-input {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--border-light);
+    border-radius: 6px;
+    font-size: 0.9rem;
+    color: var(--text-main);
+    transition: all 0.2s;
+    background-color: #f8fafc;
+}
+
+.modal-input:focus {
+    background-color: #fff;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(234, 88, 12, 0.1);
+    outline: none;
+}
+
+/* Select Arrow Styling */
+.select-wrapper {
+    position: relative;
+}
+.select-wrapper::after {
+    content: "▼";
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    position: absolute;
+    right: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    pointer-events: none;
+}
+select.modal-input {
+    appearance: none;
+    cursor: pointer;
+}
+
+/* Footer Actions */
+.form-actions {
+    margin-top: 24px;
+    padding-top: 20px;
+    border-top: 1px solid #f1f5f9;
+    display: flex;
+    justify-content: flex-end;
+}
+
+.form-actions .button {
+    height: 40px;
+    font-size: 0.9rem;
+    padding: 0 24px;
+}
+

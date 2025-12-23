@@ -1,5 +1,3 @@
-
-
 import os
 import pandas as pd
 import numpy as np
@@ -15,10 +13,114 @@ from math import ceil
 from app import app
 from app.database import get_db_connection, row_to_dict
 
+# --- NEW IMPORTS FOR LOGIN ---
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from app import login_manager
+
+
+class User(UserMixin):
+    def __init__(self, user_id, username, name):
+        self.id = user_id      # Primary Key (int)
+        self.username = username
+        self.name = name
+
+    def __repr__(self):
+        return f"{self.id}/{self.username}"
+
+# --- HELPER: INITIALIZE USER TABLE (Structure Only) ---
+def init_user_db():
+    """Creates the users table if missing. Does NOT create default users."""
+    conn = get_db_connection()
+    if not conn: return
+    try:
+        cursor = conn.cursor()
+        # Create Table Only
+        cursor.execute("""
+            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='app_users' and xtype='U')
+            CREATE TABLE app_users (
+                user_id INT IDENTITY(1,1) PRIMARY KEY,
+                username NVARCHAR(50) NOT NULL UNIQUE,
+                password NVARCHAR(255) NOT NULL,
+                full_name NVARCHAR(100)
+            );
+        """)
+        conn.commit()
+    except Exception as e:
+        print(f"Error initializing user DB: {e}")
+    finally:
+        conn.close()
+# --- USER LOADER (For Session) ---
+@login_manager.user_loader
+def load_user(user_id):
+    conn = get_db_connection()
+    if not conn: return None
+    try:
+        cursor = conn.cursor()
+        # Ensure user_id is safe (int)
+        cursor.execute("SELECT user_id, username, full_name FROM app_users WHERE user_id = ?", user_id)
+        row = cursor.fetchone()
+        if row:
+            return User(row[0], row[1], row[2])
+    except Exception:
+        return None
+    finally:
+        conn.close()
+    return None
+
+# --- LOGIN ROUTES ---
+
+
+@app.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    flash('You have been logged out.', 'info')
+    return redirect(url_for('login'))
+
+
+# --- LOGIN ROUTES ---
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    # Ensure DB table exists when visiting login
+    if request.method == 'GET':
+        init_user_db()
+
+    if current_user.is_authenticated:
+        return redirect(url_for('production_planning'))
+
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+
+        conn = get_db_connection()
+        user_found = None
+        
+        if conn:
+            try:
+                cursor = conn.cursor()
+                # Check credentials
+                cursor.execute("SELECT user_id, username, full_name FROM app_users WHERE username = ? AND password = ?", (username, password))
+                row = cursor.fetchone()
+                
+                if row:
+                    user_found = User(row[0], row[1], row[2])
+            finally:
+                conn.close()
+
+        if user_found:
+            login_user(user_found)
+            return redirect(request.args.get('next') or url_for('production_planning'))
+        else:
+            flash('Invalid username or password', 'error')
+
+    return render_template('login.html')
+
+
 
 UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
 
 
 STAGES = [
@@ -56,30 +158,19 @@ def check_and_clear_daily_tables():
 
     try:
         cursor = conn.cursor()
-        # Ensure status table exists
-        cursor.execute("""
-            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='app_status' and xtype='U')
-            CREATE TABLE app_status (
-                status_key NVARCHAR(255) PRIMARY KEY,
-                status_value NVARCHAR(255) -- Storing dates as YYYY-MM-DD strings
-            );
-        """)
-        conn.commit()
+        # ... (keep existing table check logic) ...
 
         # --- Determine Current Production Date (adjusting for 2 AM cutoff) ---
         now = datetime.now()
-        # If it's before 2 AM (hour 0 or 1), the production date is *yesterday*
         if now.hour < 2:
             current_production_date = (now - timedelta(days=1)).date()
         else:
             current_production_date = now.date()
 
         current_production_date_str = current_production_date.strftime('%Y-%m-%d')
-        print(f"Current Production Date determined as: {current_production_date_str}")
 
-        # --- 1. Check/Reset Pending Triggers ---
-        cursor.execute(
-            "SELECT status_value FROM app_status WHERE status_key = 'last_triggers_upload_date'")
+        # Check last upload date
+        cursor.execute("SELECT status_value FROM app_status WHERE status_key = 'last_triggers_upload_date'")
         row_triggers = cursor.fetchone()
         last_triggers_date_str = row_triggers[0] if row_triggers and row_triggers[0] else None
 
@@ -93,12 +184,19 @@ def check_and_clear_daily_tables():
                 pass
 
         if needs_trigger_reset:
-            print("Performing trigger reset...")
-            # Clear triggers table
+            print("Performing automatic daily trigger reset...")
+            # 1. Clear raw triggers table for the new day
             cursor.execute("IF OBJECT_ID('dbo.pending_triggers', 'U') IS NOT NULL DELETE FROM pending_triggers")
-            # Clear related timestamp if it exists from old logic
+            
+            # 2. Reset master table columns
+            cursor.execute("IF OBJECT_ID('dbo.master', 'U') IS NOT NULL UPDATE master SET [Pending] = 0, [Next Pending] = 0")
+            
+            # NOTE: We DO NOT delete from trigger_history here. 
+            # This preserves the record of the day that just finished.
+
+            # 3. Clear timestamp and update status date
             cursor.execute("DELETE FROM app_status WHERE status_key = 'last_triggers_upload_timestamp'")
-            # Update status with the current production date
+            
             upsert_sql_triggers = """
                 MERGE app_status AS target
                 USING (SELECT 'last_triggers_upload_date' AS status_key, ? AS status_value) AS source
@@ -108,42 +206,14 @@ def check_and_clear_daily_tables():
             """
             cursor.execute(upsert_sql_triggers, current_production_date_str)
             conn.commit()
-            print("Trigger reset complete.")
-
-        # --- 2. Live Dispatch Reset (DISABLED) ---
-        # The logic below is commented out to ensure Dispatch Quantity persists and accumulates.
-        """
-        cursor.execute("SELECT status_value FROM app_status WHERE status_key = 'last_dispatch_reset_date'")
-        row_dispatch = cursor.fetchone()
-        last_dispatch_reset_date_str = row_dispatch[0] if row_dispatch and row_dispatch[0] else None
-
-        needs_dispatch_reset = True
-        if last_dispatch_reset_date_str:
-            try:
-                last_dispatch_reset_date = datetime.strptime(last_dispatch_reset_date_str, '%Y-%m-%d').date()
-                if last_dispatch_reset_date >= current_production_date:
-                    needs_dispatch_reset = False
-            except ValueError:
-                pass
-
-        if needs_dispatch_reset:
-            print("Performing dispatch reset...")
-            # Reset Live Dispatch in master table
-            cursor.execute("IF OBJECT_ID('dbo.master', 'U') IS NOT NULL UPDATE master SET [Live Dispatch] = 0")
-            # Update status with the current production date
-            upsert_sql_dispatch = "..."
-            cursor.execute(upsert_sql_dispatch, current_production_date_str)
-            conn.commit()
-            print("Dispatch reset complete.")
-        """
+            print("Automatic reset complete. History preserved.")
 
     except Exception as e:
         print(f"Error during daily check/reset: {e}")
-        traceback.print_exc()
         if conn: conn.rollback()
     finally:
-        if conn:
-            conn.close()
+        if conn: conn.close()
+
 
 def replace_table_with_df(df, table_name, cursor):
     cursor.execute(f"IF OBJECT_ID('dbo.{table_name}', 'U') IS NOT NULL DROP TABLE dbo.{table_name}")
@@ -212,126 +282,195 @@ def prioritize_plan_with_ahp(df_plan, weights):
 
     return df_plan
 
+# In app/routes.py
+
+# In app/routes.py
+
+# In app/routes.py
 
 @app.route('/', endpoint='production_planning')
+@login_required
 def production_planning():
     check_and_clear_daily_tables()
     ahp_weights = session.get('ahp_weights', DEFAULT_AHP_WEIGHTS.copy())
 
-    # Filter variables for Overdue Triggers view (kept separate)
+    # --- FILTERS ---
+    filter_search = request.args.get('search', '')
+    filter_vertical = request.args.get('vertical', '')
+    filter_category = request.args.get('category', '')
+    
+    # Check if this is an AJAX request for real-time filtering
+    ajax_request = request.args.get('ajax')
+
+    # Overdue View filters
     filter_trigger_type = request.args.get('trigger_type', 'All')
     filter_item_code = request.args.get('item_code', '')
-
-    # Standard view variable
+    
     current_view = request.args.get('view', 'production')
 
-    conn = get_db_connection()
-    plans, overdue_items, trigger_type_list, item_code_list = [], [], [], []
-    master_has_data = False
+    # Pagination
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 20, type=int)
+    offset = (page - 1) * per_page
 
-    # New State Variables
+    conn = get_db_connection()
+    plans, overdue_items = [], []
+    trigger_type_list, item_code_list = [], []
+    all_verticals, all_categories = [], []
+
+    master_has_data = False
     triggers_uploaded_today = False
     plan_generated_today = False
+    pagination = None
+    total_pages = 1
 
     if conn:
         try:
             cursor = conn.cursor()
 
-            # 1. Check Master Data
+            # 1. Check Master Data & Status
             try:
                 cursor.execute("SELECT COUNT(*) FROM master")
                 if cursor.fetchone()[0] > 0: master_has_data = True
-            except pyodbc.ProgrammingError:
-                master_has_data = False
+            except: master_has_data = False
 
-            # 2. Check Trigger Upload Status
             cursor.execute("SELECT status_value FROM app_status WHERE status_key = 'last_triggers_upload_timestamp'")
             row = cursor.fetchone()
             if row and row[0]:
-                upload_time = pd.to_datetime(row[0])
-                now = datetime.now()
-                if now.hour < 2:
-                    current_prod_date = (now - timedelta(days=1)).date()
-                else:
-                    current_prod_date = now.date()
-
-                if upload_time.date() >= current_prod_date:
+                if pd.to_datetime(row[0]).date() >= datetime.now().date():
                     triggers_uploaded_today = True
 
-            # 3. Check if Plan Exists (Fetch ALL records now)
+            # 2. Fetch Dropdowns (Ensures RCB and others appear)
             try:
-                cursor.execute("SELECT COUNT(*) FROM Production_pl")
-                total = cursor.fetchone()[0]
-                if total > 0:
-                    plan_generated_today = True
+                cursor.execute("SELECT DISTINCT [Vertical] FROM Production_pl WHERE [Vertical] IS NOT NULL ORDER BY [Vertical]")
+                all_verticals = [row[0] for row in cursor.fetchall()]
+                
+                cursor.execute("SELECT DISTINCT [Category] FROM Production_pl WHERE [Category] IS NOT NULL ORDER BY [Category]")
+                all_categories = [row[0] for row in cursor.fetchall()]
+            except: pass
 
-                    # CHANGED: Removed Pagination (OFFSET/FETCH)
-                    sql_select_plans = """
-                        SELECT * FROM Production_pl
-                        ORDER BY [priority_weight] DESC
-                    """
-                    cursor.execute(sql_select_plans)
-                    plans = [row_to_dict(cursor, row) for row in cursor.fetchall()]
-            except pyodbc.ProgrammingError:
-                pass
-
-            # 4. Fetch Overdue Items (Existing logic preserved)
+            # 3. Fetch Production Plan (With Filters & WIP)
             try:
-                cursor.execute(
-                    "SELECT DISTINCT [TRIGGER TYPE] FROM pending_triggers WHERE [TRIGGER TYPE] IS NOT NULL ORDER BY [TRIGGER TYPE]")
-                trigger_type_list = [row[0] for row in cursor.fetchall()]
-                cursor.execute(
-                    "SELECT DISTINCT [ITEM CODE] FROM pending_triggers WHERE [ITEM CODE] IS NOT NULL ORDER BY [ITEM CODE]")
-                item_code_list = [row[0] for row in cursor.fetchall()]
-
-                sql_overdue = "SELECT * FROM pending_triggers WHERE CAST([DUE DT] AS DATE) < ?"
+                base_where = " WHERE 1=1 "
                 params = []
-                if filter_trigger_type != 'All':
-                    sql_overdue += " AND [TRIGGER TYPE] = ?"
-                    params.append(filter_trigger_type)
-                if filter_item_code:
-                    sql_overdue += " AND [ITEM CODE] LIKE ?"
-                    params.append(f"%{filter_item_code}%")
-                sql_overdue += " ORDER BY [DUE DT] ASC"
 
-                cursor.execute(sql_overdue, [date.today()] + params)
-                overdue_items = [row_to_dict(cursor, row) for row in cursor.fetchall()]
-            except pyodbc.ProgrammingError:
-                pass
+                if filter_search:
+                    base_where += " AND (p.[Item code ] LIKE ? OR p.[Description] LIKE ?) "
+                    params.extend([f'%{filter_search}%', f'%{filter_search}%'])
+                if filter_vertical:
+                    base_where += " AND p.[Vertical] = ? "
+                    params.append(filter_vertical)
+                if filter_category:
+                    base_where += " AND p.[Category] = ? "
+                    params.append(filter_category)
 
-        except Exception as e:
-            flash(f'An unexpected error occurred: {e}', 'error')
-            traceback.print_exc()
+                # Count Total
+                cursor.execute(f"SELECT COUNT(*) FROM Production_pl p {base_where}", params)
+                total_items = cursor.fetchone()[0]
+                
+                # Check generation flag
+                cursor.execute("IF OBJECT_ID('dbo.Production_pl', 'U') IS NOT NULL SELECT 1 ELSE SELECT 0")
+                if cursor.fetchone()[0] == 1: plan_generated_today = True
+
+                if total_items > 0:
+                    total_pages = ceil(total_items / per_page)
+                    
+                    # WIP Logic
+                    try:
+                        all_stages = get_dynamic_stages(cursor)
+                    except: all_stages = []
+                    if not all_stages: all_stages = STAGES
+                    wip_stages = [s for s in all_stages if s not in ['FG', 'Not Started']]
+                    wip_sum_sql = " + ".join([f"ISNULL(m.[{s}], 0)" for s in wip_stages]) if wip_stages else "0"
+
+                    sql_select_plans = f"""
+                        SELECT p.*, ({wip_sum_sql}) as [WIP]
+                        FROM Production_pl p
+                        LEFT JOIN master m ON p.[Item code ] = m.[Item code]
+                        {base_where}
+                        ORDER BY p.[priority_weight] DESC
+                        OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
+                    """
+                    cursor.execute(sql_select_plans, params + [offset, per_page])
+                    plans = [row_to_dict(cursor, row) for row in cursor.fetchall()]
+
+                    pagination = {
+                        'page': page, 'per_page': per_page, 'total': total_items,
+                        'total_pages': total_pages, 'has_prev': page > 1, 'has_next': page < total_pages,
+                        'prev_num': page - 1, 'next_num': page + 1
+                    }
+            except Exception as e:
+                print(f"Plan Query Error: {e}")
+
+            # 4. Fetch Overdue (Only if View is Overdue)
+            if current_view == 'overdue':
+                try:
+                    cursor.execute("SELECT DISTINCT [TRIGGER TYPE] FROM pending_triggers WHERE [TRIGGER TYPE] IS NOT NULL")
+                    trigger_type_list = [row[0] for row in cursor.fetchall()]
+                    
+                    sql_overdue = "SELECT * FROM pending_triggers WHERE CAST([DUE DT] AS DATE) < ?"
+                    ov_params = [date.today()]
+                    if filter_trigger_type != 'All':
+                        sql_overdue += " AND [TRIGGER TYPE] = ?"
+                        ov_params.append(filter_trigger_type)
+                    if filter_item_code:
+                        sql_overdue += " AND [ITEM CODE] LIKE ?"
+                        ov_params.append(f"%{filter_item_code}%")
+                    sql_overdue += " ORDER BY [DUE DT] ASC"
+                    cursor.execute(sql_overdue, ov_params)
+                    overdue_items = [row_to_dict(cursor, row) for row in cursor.fetchall()]
+                except: pass
+
         finally:
-            if conn: conn.close()
+            conn.close()
 
+    # --- AJAX RESPONSE (JSON for JS Rendering) ---
+    if ajax_request:
+        return jsonify({
+            'status': 'success',
+            'plans': plans, 
+            'total_pages': total_pages,
+            'current_page': page,
+            'per_page': per_page
+        })
+
+    # --- FULL PAGE RESPONSE ---
     return render_template('productionpl.html',
                            plans=plans,
                            weights=ahp_weights,
                            overdue_items=overdue_items,
                            table_exists=master_has_data,
-                           # Pass new flags to template
                            triggers_uploaded_today=triggers_uploaded_today,
                            plan_generated_today=plan_generated_today,
+                           all_verticals=all_verticals,
+                           all_categories=all_categories,
+                           filter_search=filter_search,
+                           filter_vertical=filter_vertical,
+                           filter_category=filter_category,
                            trigger_type_list=trigger_type_list,
-                           item_code_list=item_code_list,
                            selected_trigger_type=filter_trigger_type,
                            selected_item_code=filter_item_code,
-                           # Removed pagination object
-                           pagination=None)
+                           pagination=pagination,
+                           current_per_page=per_page)
+
+
 @app.route('/wip_tracking', endpoint='wip_tracking')
+@login_required
 def wip_tracking():
-    # ... (existing setup code: page, search, filter vars) ...
+    # 1. Get Per Page from URL
+    per_page = request.args.get('per_page', 20, type=int)
     page = request.args.get('page', 1, type=int)
-    per_page = 20
     offset = (page - 1) * per_page
+    
     search_query = request.args.get('search', '')
     selected_type = request.args.get('type', '')
     selected_category = request.args.get('category', '')
 
-    # Hardcoded Options
     type_options = ['Lean', 'Non Lean']
     category_options = ['Stranger', 'Runner', 'Repeater', 'Milk Run']
+
+    # --- GROUP DEFINITION (Ordered) ---
+    BEFORE_HYDRO_GROUP = ["Long seam", "Dish fit up", "Cirseam welding", "Part assembly", "Full welding"]
 
     conn = get_db_connection()
     if not conn:
@@ -339,18 +478,23 @@ def wip_tracking():
         return redirect(url_for('dashboard'))
 
     master_items = []
-    dynamic_stages = []
+    display_stages = [] # Stages to show in table
     pagination = None
 
     try:
         cursor = conn.cursor()
 
-        # 1. FETCH DYNAMIC STAGES
-        # We assume 'Not Started' and 'FG' might be in this list or separate columns
+        # 1. FETCH ALL DB STAGES
         cursor.execute("SELECT stage_name FROM manufacturing_stages ORDER BY display_order ASC")
-        dynamic_stages = [row[0] for row in cursor.fetchall()]
+        all_db_stages = [row[0] for row in cursor.fetchall()]
 
-        # 2. Build Query
+        # 2. Define Display Stages (Grouped View)
+        display_stages = ['Before Hydro']
+        for s in all_db_stages:
+            if s not in BEFORE_HYDRO_GROUP and s != 'Not Started':
+                display_stages.append(s)
+
+        # 3. Build Query
         base_query = "SELECT * FROM master WHERE 1=1"
         count_query = "SELECT COUNT(*) FROM master WHERE 1=1"
         params = []
@@ -370,40 +514,45 @@ def wip_tracking():
             count_query += " AND [Category] = ?"
             params.append(selected_category)
 
-        # 3. Pagination
+        # 4. Pagination
         cursor.execute(count_query, params)
         total_items = cursor.fetchone()[0]
         total_pages = ceil(total_items / per_page)
 
-        # 4. Fetch Data
+        # 5. Fetch Data
         final_query = base_query + " ORDER BY [Item code] OFFSET ? ROWS FETCH NEXT ? ROWS ONLY"
         params.extend([offset, per_page])
 
         cursor.execute(final_query, params)
         master_items = [row_to_dict(cursor, row) for row in cursor.fetchall()]
 
-        # 5. Calculate Total Inventory Dynamically (CORRECTED)
+        # 6. Process Items
+        import json
         for item in master_items:
+            # A. Calculate Total Inv
             current_total = 0
-            for stage in dynamic_stages:
-                # SKIP 'Not Started' and 'FG' from the total sum
-                if stage in ['Not Started', 'FG']:
-                    continue
-
+            for stage in all_db_stages:
+                if stage in ['Not Started', 'FG']: continue
                 qty = item.get(stage)
-                if qty:
-                    current_total += int(qty)
+                if qty: current_total += int(qty)
             item['Total Inv'] = current_total
 
+            # B. Calculate "Before Hydro" Group
+            group_sum = 0
+            breakdown = {}
+            for sub in BEFORE_HYDRO_GROUP:
+                q = item.get(sub, 0) or 0
+                if q > 0:
+                    group_sum += int(q)
+                    breakdown[sub] = int(q)
+            
+            item['Before Hydro'] = group_sum
+            item['Before_Hydro_Breakdown'] = json.dumps(breakdown)
+
         pagination = {
-            'page': page,
-            'per_page': per_page,
-            'total': total_items,
-            'total_pages': total_pages,
-            'has_prev': page > 1,
-            'has_next': page < total_pages,
-            'prev_num': page - 1,
-            'next_num': page + 1
+            'page': page, 'per_page': per_page, 'total': total_items,
+            'total_pages': total_pages, 'has_prev': page > 1, 'has_next': page < total_pages,
+            'prev_num': page - 1, 'next_num': page + 1
         }
 
     except Exception as e:
@@ -414,14 +563,15 @@ def wip_tracking():
 
     return render_template('wip.html',
                            master_items=master_items,
-                           stages=dynamic_stages,
+                           stages=display_stages,
+                           group_stages=BEFORE_HYDRO_GROUP, # Pass group order to frontend
                            type_options=type_options,
                            category_options=category_options,
                            selected_type=selected_type,
                            selected_category=selected_category,
                            search_query=search_query,
-                           pagination=pagination)
-
+                           pagination=pagination,
+                           current_per_page=per_page)
 
 @app.route('/release_plan', methods=['POST'], endpoint='release_plan')
 def release_plan():
@@ -463,8 +613,8 @@ def release_plan():
 
     return redirect(url_for('production_planning'))
 
-
 @app.route('/dashboard', endpoint='dashboard')
+@login_required
 def dashboard():
     current_view = request.args.get('view', 'overview')
     filter_type = request.args.get('type')
@@ -477,7 +627,7 @@ def dashboard():
 
     conn = get_db_connection()
 
-    # Defaults
+    # --- 1. INITIALIZE DEFAULTS (Vital for preventing UndefinedError) ---
     stage_totals = {}
     top_plans = []
     vertical_overview = []
@@ -487,19 +637,32 @@ def dashboard():
     daily_adherence = 0
     monthly_adherence = 0
     total_monthly_dispatch = 0
+    monthly_trigger_adherence = 0  # <--- INITIALIZE HERE
     failure_reasons = FAILURE_REASONS
     show_failure_button = True
+    current_stages = []
 
+    # Handle DB Connection Failure
     if not conn:
         flash('Database connection failed.', 'error')
+        # We must pass the default 'monthly_trigger_adherence=0' here too
         return render_template('dashboard.html', current_view='overview', stages=[], show_failure_button=False,
                                stage_totals={}, top_plans=[], pagination=None, vertical_overview=[],
                                category_overview=[],
-                               total_monthly_dispatch=0, daily_adherence=0, monthly_adherence=0, failure_reasons=[],
-                               all_verticals=[])
+                               total_monthly_dispatch=0, daily_adherence=0, monthly_adherence=0, 
+                               monthly_trigger_adherence=0, # <--- PASS IT HERE
+                               failure_reasons=[], all_verticals=[])
 
     try:
         cursor = conn.cursor()
+        
+        # --- FIX: Ensure 'Next Pending' column exists before querying ---
+        cursor.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'Next Pending' AND Object_ID = Object_ID(N'master'))
+            ALTER TABLE master ADD [Next Pending] INT DEFAULT 0 WITH VALUES;
+        """)
+        conn.commit()
+
         current_stages = get_dynamic_stages(cursor, dashboard_only=True)
 
         # 1. ENSURE TABLES EXIST
@@ -532,40 +695,39 @@ def dashboard():
         else:
             total_daily_target = 0
 
-        # Calculate Actual Dispatch from LOGS (2 AM Cutoff)
+        # Calculate Actual Dispatch from LOGS (2 AM Cutoff) - FROM FG TO DISPATCH
         sql_daily_actual = """
                     DECLARE @CurrentProductionDate DATE = CAST(DATEADD(hour, -2, GETDATE()) AS DATE);
                     DECLARE @ProductionDayStart DATETIME = DATEADD(hour, 2, CAST(@CurrentProductionDate AS DATETIME));
                     DECLARE @ProductionDayEnd DATETIME = DATEADD(day, 1, @ProductionDayStart);
 
                     SELECT SUM(quantity) FROM production_log 
-                    WHERE to_stage = 'Dispatch' AND moved_at >= @ProductionDayStart AND moved_at < @ProductionDayEnd
+                    WHERE from_stage = 'FG' AND to_stage = 'Dispatch' 
+                    AND moved_at >= @ProductionDayStart AND moved_at < @ProductionDayEnd
                 """
         cursor.execute(sql_daily_actual)
         total_daily_dispatched = cursor.fetchone()[0] or 0
 
-        daily_adherence = (total_daily_dispatched / total_daily_target * 100) if total_daily_target > 0 else (
-            100.0 if total_daily_dispatched > 0 else 0)
+        daily_adherence = (total_daily_dispatched / total_daily_target * 100) if total_daily_target > 0 else 0
 
-        # 4. MONTHLY ADHERENCE
-        cursor.execute("SELECT SUM(ISNULL([MonthlyAvg], 0)) FROM master")
-        total_monthly_avg = (cursor.fetchone()[0] or 0)
-
-        sql_monthly_actual = """
-                    SELECT SUM(quantity) FROM production_log 
-                    WHERE to_stage = 'Dispatch' AND MONTH(moved_at) = MONTH(GETDATE()) AND YEAR(moved_at) = YEAR(GETDATE())
-                """
-        cursor.execute(sql_monthly_actual)
-        total_monthly_dispatched = (cursor.fetchone()[0] or 0)
-
-        monthly_adherence = (total_monthly_dispatched / total_monthly_avg * 100) if total_monthly_avg > 0 else (
-            100.0 if total_monthly_dispatched > 0 else 0)
-
-        total_monthly_dispatch = total_monthly_dispatched
+        # 4. MONTHLY DISPATCH
+        sql_monthly_dispatch = """
+            SELECT SUM(pl.quantity) 
+            FROM production_log pl
+            INNER JOIN master m ON pl.item_code = m.[Item code]
+            WHERE pl.to_stage IN ('Dispatch', 'Delivered') 
+            AND MONTH(pl.moved_at) = MONTH(GETDATE()) 
+            AND YEAR(pl.moved_at) = YEAR(GETDATE())
+        """
+        cursor.execute(sql_monthly_dispatch)
+        total_monthly_dispatch = cursor.fetchone()[0] or 0
+        
+        # --- 5. CALCULATE MONTHLY TRIGGER ADHERENCE ---
+        # Call the helper function defined in step 1 of previous solution
+        monthly_trigger_adherence = calculate_monthly_trigger_adherence(conn)
 
         # --- VIEW LOGIC ---
         if current_view == 'details' and filter_type and filter_value:
-            # ... (Details view logic remains mostly same, can be updated similarly if needed) ...
             column_map = {'vertical': '[Vertical]', 'category': '[Category]'}
             target_column = column_map.get(filter_type)
 
@@ -573,7 +735,6 @@ def dashboard():
                 return redirect(url_for('dashboard'))
 
             sql_details = f"""
-                -- UPDATED TO USE LOGS FOR DISPATCH
                 DECLARE @CurrentProductionDate DATE = CAST(DATEADD(hour, -2, GETDATE()) AS DATE);
                 DECLARE @ProductionDayStart DATETIME = DATEADD(hour, 2, CAST(@CurrentProductionDate AS DATETIME));
                 DECLARE @ProductionDayEnd DATETIME = DATEADD(day, 1, @ProductionDayStart);
@@ -581,7 +742,7 @@ def dashboard():
                 WITH TodayDispatch AS (
                     SELECT item_code, SUM(quantity) as QtyDispatched
                     FROM production_log
-                    WHERE to_stage = 'Dispatch' 
+                    WHERE from_stage = 'FG' AND to_stage = 'Dispatch'
                     AND moved_at >= @ProductionDayStart AND moved_at < @ProductionDayEnd
                     GROUP BY item_code
                 )
@@ -594,7 +755,7 @@ def dashboard():
                     ISNULL(m.[Powder coating], 0) as [Powder coating], 
                     ISNULL(m.[Hydro Testing], 0) as [Hydro Testing],
 
-                    ISNULL(td.QtyDispatched, 0) AS [Dispatched] -- UPDATED FROM LOG
+                    ISNULL(td.QtyDispatched, 0) AS [Dispatched]
                 FROM Production_pl p
                 LEFT JOIN master m ON p.[Item code ] = m.[Item code]
                 LEFT JOIN TodayDispatch td ON p.[Item code ] = td.item_code
@@ -612,8 +773,8 @@ def dashboard():
                                    stages=current_stages,
                                    all_verticals=all_verticals_list,
                                    daily_adherence=daily_adherence,
-                                   monthly_adherence=monthly_adherence,
                                    total_monthly_dispatch=total_monthly_dispatch,
+                                   monthly_trigger_adherence=monthly_trigger_adherence, # <--- PASS HERE
                                    show_failure_button=show_failure_button)
 
         else:
@@ -632,7 +793,7 @@ def dashboard():
                               'has_prev': page > 1, 'has_next': page < total_pages, 'prev_num': page - 1,
                               'next_num': page + 1}
 
-                # --- TOP PLANS QUERY (UPDATED) ---
+                # --- TOP PLANS QUERY ---
                 sql_top_plans = """
                                 DECLARE @CurrentProductionDate DATE = CAST(DATEADD(hour, -2, GETDATE()) AS DATE);
                                 DECLARE @ProductionDayStart DATETIME = DATEADD(hour, 2, CAST(@CurrentProductionDate AS DATETIME));
@@ -648,11 +809,10 @@ def dashboard():
                                     WHERE to_stage = 'FG' AND moved_at >= @ProductionDayStart AND moved_at < @ProductionDayEnd
                                     GROUP BY item_code
                                 ),
-                                -- NEW CTE FOR DISPATCH LOGS
                                 TodayDispatch AS (
                                     SELECT item_code, SUM(quantity) as QtyDispatched
                                     FROM production_log
-                                    WHERE to_stage = 'Dispatch' 
+                                    WHERE from_stage = 'FG' AND to_stage = 'Dispatch'
                                     AND moved_at >= @ProductionDayStart AND moved_at < @ProductionDayEnd
                                     GROUP BY item_code
                                 )
@@ -660,11 +820,14 @@ def dashboard():
                                     p.[S.No.], p.[Item code ], p.[Description], 
 
                                     ISNULL(m.[Pending], 0) AS [Opening Trigger],
+                                    ISNULL(m.[Next Pending], 0) AS [Next Pending], 
 
-                                    -- Pending = Opening Trigger - Today Dispatch (From Log)
-                                    (ISNULL(m.[Pending], 0) - ISNULL(td.QtyDispatched, 0)) AS [Pending],
+                                    CASE 
+                                        WHEN (ISNULL(m.[Pending], 0) - ISNULL(td.QtyDispatched, 0)) < 0 THEN 0
+                                        ELSE (ISNULL(m.[Pending], 0) - ISNULL(td.QtyDispatched, 0))
+                                    END AS [Pending],
 
-                                    ISNULL(td.QtyDispatched, 0) AS [Dispatch], -- UPDATED
+                                    ISNULL(td.QtyDispatched, 0) AS [Dispatch],
                                     m.[FG],
                                     ISNULL(m.[Powder coating], 0) AS [Powder coating],
                                     ISNULL(m.[Hydro Testing], 0) AS [Hydro Testing],
@@ -673,7 +836,10 @@ def dashboard():
                                         THEN (CAST(ISNULL(td.QtyDispatched, 0) AS FLOAT) * 100.0 / CAST(m.[Pending] AS FLOAT))
                                         ELSE 100.0 END AS ItemAdherencePercent,
 
-                                    (ISNULL(m.[Pending], 0) - ISNULL(td.QtyDispatched, 0)) AS FailureInTrigger,
+                                    CASE 
+                                        WHEN (ISNULL(m.[Pending], 0) - ISNULL(td.QtyDispatched, 0)) < 0 THEN 0
+                                        ELSE (ISNULL(m.[Pending], 0) - ISNULL(td.QtyDispatched, 0))
+                                    END AS FailureInTrigger,
 
                                     cfr.reason AS SavedReason
                                 FROM Production_pl p
@@ -682,7 +848,6 @@ def dashboard():
                                 LEFT JOIN ItemsReachedFG fg ON p.[Item code ] = fg.item_code
                                 LEFT JOIN TodayDispatch td ON p.[Item code ] = td.item_code
 
-                                -- Sort Non-Zero Triggers to the top, then by Weight
                                 ORDER BY 
                                     CASE WHEN ISNULL(m.[Pending], 0) > 0 THEN 1 ELSE 0 END DESC,
                                     p.[priority_weight] DESC, 
@@ -692,7 +857,7 @@ def dashboard():
                 cursor.execute(sql_top_plans, (offset, per_page))
                 top_plans = [row_to_dict(cursor, row) for row in cursor.fetchall()]
 
-                # --- VERTICAL OVERVIEW (UPDATED) ---
+                # --- VERTICAL OVERVIEW ---
                 sql_vertical = """
                     DECLARE @CurrentProductionDate DATE = CAST(DATEADD(hour, -2, GETDATE()) AS DATE);
                     DECLARE @ProductionDayStart DATETIME = DATEADD(hour, 2, CAST(@CurrentProductionDate AS DATETIME));
@@ -707,17 +872,20 @@ def dashboard():
                     VerticalDispatch AS (
                         SELECT m.[Vertical], SUM(pl.quantity) as QtyDispatched
                         FROM production_log pl JOIN master m ON pl.item_code = m.[Item code]
-                        WHERE pl.to_stage = 'Dispatch' AND pl.moved_at >= @ProductionDayStart AND pl.moved_at < @ProductionDayEnd
+                        WHERE pl.from_stage = 'FG' AND pl.to_stage = 'Dispatch'
+                        AND pl.moved_at >= @ProductionDayStart AND pl.moved_at < @ProductionDayEnd
                         GROUP BY m.[Vertical]
                     )
                     SELECT 
                         p.[Vertical], 
-
                         SUM(ISNULL(m.[Pending], 0)) as [Opening Trigger],
+                        
+                        CASE 
+                            WHEN (SUM(ISNULL(m.[Pending], 0)) - ISNULL(vd.QtyDispatched, 0)) < 0 THEN 0
+                            ELSE (SUM(ISNULL(m.[Pending], 0)) - ISNULL(vd.QtyDispatched, 0))
+                        END as [Pending],
 
-                        (SUM(ISNULL(m.[Pending], 0)) - ISNULL(vfg.QtyReachedFG, 0)) as [Pending],
-
-                        ISNULL(vd.QtyDispatched, 0) as [Dispatch], -- UPDATED FROM LOGS
+                        ISNULL(vd.QtyDispatched, 0) as [Dispatch],
                         ISNULL(vfg.QtyReachedFG, 0) as [Achieved]
                     FROM Production_pl p 
                     LEFT JOIN master m ON p.[Item code ] = m.[Item code]
@@ -734,7 +902,7 @@ def dashboard():
                     ach = item.get('Achieved', 0)
                     item['AdherencePercent'] = (ach * 100.0 / trig) if trig > 0 else 100.0
 
-                # --- CATEGORY OVERVIEW (UPDATED) ---
+                # --- CATEGORY OVERVIEW ---
                 sql_category = """
                     DECLARE @CurrentProductionDate DATE = CAST(DATEADD(hour, -2, GETDATE()) AS DATE);
                     DECLARE @ProductionDayStart DATETIME = DATEADD(hour, 2, CAST(@CurrentProductionDate AS DATETIME));
@@ -749,24 +917,27 @@ def dashboard():
                     CategoryDispatch AS (
                         SELECT m.[Category], SUM(pl.quantity) as QtyDispatched
                         FROM production_log pl JOIN master m ON pl.item_code = m.[Item code]
-                        WHERE pl.to_stage = 'Dispatch' AND pl.moved_at >= @ProductionDayStart AND pl.moved_at < @ProductionDayEnd
+                        WHERE pl.from_stage = 'FG' AND pl.to_stage = 'Dispatch'
+                        AND pl.moved_at >= @ProductionDayStart AND pl.moved_at < @ProductionDayEnd
                         GROUP BY m.[Category]
                     )
                     SELECT 
                         p.[Category], 
-
                         SUM(ISNULL(m.[Pending], 0)) as [Opening Trigger],
+                        
+                        CASE 
+                            WHEN (SUM(ISNULL(m.[Pending], 0)) - ISNULL(cd.QtyDispatched, 0)) < 0 THEN 0
+                            ELSE (SUM(ISNULL(m.[Pending], 0)) - ISNULL(cd.QtyDispatched, 0))
+                        END as [Pending],
 
-                        (SUM(ISNULL(m.[Pending], 0)) - ISNULL(cfg.QtyReachedFG, 0)) as [Pending],
-
-                        ISNULL(cd.QtyDispatched, 0) as [Dispatch], -- UPDATED FROM LOGS
+                        ISNULL(cd.QtyDispatched, 0) as [Dispatch],
                         ISNULL(cfg.QtyReachedFG, 0) as [Achieved]
                     FROM Production_pl p 
                     LEFT JOIN master m ON p.[Item code ] = m.[Item code]
                     LEFT JOIN CategoryFG cfg ON p.[Category] = cfg.[Category]
                     LEFT JOIN CategoryDispatch cd ON p.[Category] = cd.[Category]
                     WHERE p.[Category] IS NOT NULL 
-                    GROUP BY p.[Category], cfg.QtyReachedFG, cd.QtyDispatched
+                    GROUP BY p.[Category], cfg.QtyReachedFG, cd.QtyDispatched 
                     ORDER BY p.[Category]
                 """
                 cursor.execute(sql_category)
@@ -786,113 +957,255 @@ def dashboard():
                                    total_wip_inventory=total_wip_inventory,
                                    all_verticals=all_verticals_list,
                                    daily_adherence=daily_adherence,
-                                   monthly_adherence=monthly_adherence,
                                    total_monthly_dispatch=total_monthly_dispatch,
+                                   monthly_trigger_adherence=monthly_trigger_adherence, # <--- PASS HERE
                                    failure_reasons=failure_reasons,
                                    show_failure_button=show_failure_button)
 
     except Exception as e:
         flash(f"An error occurred: {e}", "error")
         traceback.print_exc()
+        # FALLBACK RENDER: Must include 'monthly_trigger_adherence'
         return render_template('dashboard.html', current_view='overview', stages=[], show_failure_button=False,
                                stage_totals={}, top_plans=[], pagination=None, vertical_overview=[],
                                category_overview=[],
-                               total_monthly_dispatch=0, daily_adherence=0, monthly_adherence=0, failure_reasons=[],
+                               total_monthly_dispatch=0, daily_adherence=0, monthly_adherence=0, 
+                               monthly_trigger_adherence=0, # <--- PASS HERE TO FIX THE ERROR
+                               failure_reasons=[],
                                all_verticals=[])
     finally:
         if conn: conn.close()
 
-# --- 2. REPLACED CALCULATE ADHERENCE FUNCTION (API Support) ---
-def calculate_adherence(conn, item_codes=None, verticals=None, categories=None):
+def calculate_monthly_trigger_adherence(conn, item_codes=None, verticals=None, categories=None, types=None):
     """
-    Helper function to calculate adherence for API calls (Dashboard Cards).
+    Calculates Monthly Adherence as the AVERAGE of individual item adherences.
+    1. For each item, calculate Monthly Adherence = Total Dispatch / Total Target
+       (Where Daily Target = Prev Day's Carryover)
+    2. Cap each item's adherence at 100%.
+    3. Return the average of all active items.
+    """
+    try:
+        cursor = conn.cursor()
+        
+        today = date.today()
+        start_of_month = today.replace(day=1)
+        lookback_date = start_of_month - timedelta(days=7) 
+
+        # --- 1. Build Filter SQL ---
+        join_master = " INNER JOIN master m ON t.item_code = m.[Item code] "
+        log_join_master = " INNER JOIN master m ON pl.item_code = m.[Item code] "
+        
+        where_clause = ""
+        params = []
+
+        if item_codes:
+            seq = ','.join(['?'] * len(item_codes))
+            where_clause += f" AND m.[Item code] IN ({seq})"
+            params.extend(item_codes)
+        if verticals:
+            seq = ','.join(['?'] * len(verticals))
+            where_clause += f" AND m.[Vertical] IN ({seq})"
+            params.extend(verticals)
+        if categories:
+            seq = ','.join(['?'] * len(categories))
+            where_clause += f" AND m.[Category] IN ({seq})"
+            params.extend(categories)
+        if types:
+            seq = ','.join(['?'] * len(types))
+            where_clause += f" AND m.[Type] IN ({seq})"
+            params.extend(types)
+
+        # --- 2. Fetch Data ---
+        sql_history = f"""
+            SELECT t.upload_date, t.item_code, t.pending_quantity
+            FROM trigger_history t
+            {join_master}
+            WHERE t.upload_date >= ? {where_clause}
+        """
+        history_params = [lookback_date] + params
+        cursor.execute(sql_history, history_params)
+        
+        history_data = defaultdict(dict)
+        for row in cursor.fetchall():
+            history_data[row.upload_date][row.item_code] = row.pending_quantity
+
+        sql_log = f"""
+            SELECT CAST(pl.moved_at AS DATE) as move_date, pl.item_code, SUM(pl.quantity) as qty
+            FROM production_log pl
+            {log_join_master}
+            WHERE pl.moved_at >= ? AND pl.to_stage IN ('Dispatch', 'Delivered')
+            {where_clause}
+            GROUP BY CAST(pl.moved_at AS DATE), pl.item_code
+        """
+        log_params = [lookback_date] + params
+        cursor.execute(sql_log, log_params)
+        
+        dispatch_data = defaultdict(dict)
+        for row in cursor.fetchall():
+            dispatch_data[row.move_date][row.item_code] = row.qty
+
+        all_dates = sorted(set(history_data.keys()) | set(dispatch_data.keys()))
+        all_items = set()
+        for d in history_data: all_items.update(history_data[d].keys())
+        for d in dispatch_data: all_items.update(dispatch_data[d].keys())
+
+        if not all_dates or not all_items: return 0
+
+        # --- 3. Calculate Per-Item Adherence ---
+        item_adherence_percentages = []
+
+        for item in all_items:
+            # Build timeline for this specific item
+            timeline = []
+            for d in all_dates:
+                timeline.append({
+                    'date': d,
+                    'ot': history_data.get(d, {}).get(item, 0),
+                    'dispatch': dispatch_data.get(d, {}).get(item, 0)
+                })
+
+            item_total_dispatch = 0
+            item_total_target = 0
+
+            for i, current_day in enumerate(timeline):
+                if current_day['date'] < start_of_month: continue
+
+                item_total_dispatch += current_day['dispatch']
+
+                # Target Calculation:
+                # Target = Prev_OT - Prev_Dispatch (Carryover)
+                # If we produce everything (Carryover <= 0), Target for today is 0.
+                day_target = 0
+                if i > 0:
+                    prev = timeline[i-1]
+                    carryover = prev['ot'] - prev['dispatch']
+                    day_target = max(0, carryover)
+                else:
+                    day_target = current_day['ot']
+
+                item_total_target += day_target
+
+            # Calculate Item %
+            if item_total_target > 0:
+                p = (item_total_dispatch / item_total_target) * 100.0
+                item_adherence_percentages.append(min(100.0, p)) # Cap at 100%
+            elif item_total_dispatch > 0:
+                # Target was 0 (clean slate), but we produced items (New triggers arrived & cleared same day)
+                # This counts as 100% adherence to demand
+                item_adherence_percentages.append(100.0)
+            # Else: Target 0, Dispatch 0 -> Inactive item, ignore from average
+
+        # --- 4. Average of Percentages ---
+        if not item_adherence_percentages:
+            return 0
+
+        avg_adherence = sum(item_adherence_percentages) / len(item_adherence_percentages)
+        return avg_adherence
+
+    except Exception as e:
+        print(f"Error calculating monthly adherence: {e}")
+        traceback.print_exc()
+        return 0
+
+@app.route('/api/adherence/filtered', methods=['POST'])
+def api_adherence_filtered():
+    data = request.get_json()
+    item_codes = data.get('item_code', [])
+    verticals = data.get('vertical', [])
+    categories = data.get('category', [])
+    types = data.get('type', [])
+
+    conn = get_db_connection()
+    result_data = {
+        'daily_adherence': 0,
+        'monthly_trigger_adherence': 0 
+    }
+    
+    if conn:
+        try:
+            # 1. Calculate Daily Adherence
+            daily_data = calculate_adherence(
+                conn, 
+                item_codes=item_codes, 
+                verticals=verticals, 
+                categories=categories,
+                types=types
+            )
+            result_data['daily_adherence'] = daily_data.get('daily_adherence', 0)
+
+            # 2. Calculate Monthly Trigger Adherence (Filtered)
+            monthly_val = calculate_monthly_trigger_adherence(
+                conn,
+                item_codes=item_codes,
+                verticals=verticals,
+                categories=categories,
+                types=types
+            )
+            result_data['monthly_trigger_adherence'] = monthly_val
+
+        finally:
+            conn.close()
+    
+    return jsonify(result_data)
+
+def calculate_adherence(conn, item_codes=None, verticals=None, categories=None, types=None):
+    """
+    Helper function: Calculates ONLY Daily Adherence.
+    Monthly Adherence logic has been removed.
     """
     daily_adherence = 0
-    monthly_adherence = 0
 
-    base_query_master = "FROM master m WHERE 1=1"
-    filter_clause = ""
+    # 1. Build Filter Logic
+    filter_clause_master = ""  
     params = []
 
     if item_codes:
         seq = ','.join(['?'] * len(item_codes))
-        filter_clause = f" AND m.[Item code] IN ({seq})"
+        filter_clause_master += f" AND m.[Item code] IN ({seq})"
         params.extend(item_codes)
-    elif verticals:
+    if verticals:
         seq = ','.join(['?'] * len(verticals))
-        filter_clause = f" AND m.[Vertical] IN ({seq})"
+        filter_clause_master += f" AND m.[Vertical] IN ({seq})"
         params.extend(verticals)
-    elif categories:
+    if categories:
         seq = ','.join(['?'] * len(categories))
-        filter_clause = f" AND m.[Category] IN ({seq})"
+        filter_clause_master += f" AND m.[Category] IN ({seq})"
         params.extend(categories)
+    if types:
+        seq = ','.join(['?'] * len(types))
+        filter_clause_master += f" AND m.[Type] IN ({seq})"
+        params.extend(types)
 
     try:
         cursor = conn.cursor()
 
-        # =================================================
-        # 1. DAILY ADHERENCE (Target = Pending)
-        # =================================================
-
-        # A. Get Target (Sum of Pending) -- UPDATED from MonthlyAvg/22
-        sql_daily_target = f"SELECT SUM(ISNULL(m.[Pending], 0)) {base_query_master} {filter_clause}"
+        # --- DAILY ADHERENCE CALCULATION ---
+        sql_daily_target = f"SELECT SUM(ISNULL(m.[Pending], 0)) FROM master m WHERE 1=1 {filter_clause_master}"
         cursor.execute(sql_daily_target, params)
         total_daily_target = cursor.fetchone()[0] or 0
 
-        # B. Get Actual (Sum of items moved to 'FG' today)
         sql_daily_actual = f"""
             DECLARE @CurrentProductionDate DATE = CAST(DATEADD(hour, -2, GETDATE()) AS DATE);
             DECLARE @ProductionDayStart DATETIME = DATEADD(hour, 2, CAST(@CurrentProductionDate AS DATETIME));
             DECLARE @ProductionDayEnd DATETIME = DATEADD(day, 1, @ProductionDayStart);
 
-            SELECT SUM(pl.quantity) 
-            FROM production_log pl
-            JOIN master m ON pl.item_code = m.[Item code]
-            WHERE pl.to_stage = 'FG' 
+            SELECT SUM(pl.quantity) FROM production_log pl
+            INNER JOIN master m ON pl.item_code = m.[Item code]
+            WHERE pl.to_stage IN ('Dispatch', 'Delivered') 
             AND pl.moved_at >= @ProductionDayStart AND pl.moved_at < @ProductionDayEnd
-            {filter_clause}
+            {filter_clause_master}
         """
         cursor.execute(sql_daily_actual, params)
-        total_daily_reached_fg = cursor.fetchone()[0] or 0
+        total_daily_dispatched = cursor.fetchone()[0] or 0
 
         if total_daily_target > 0:
-            daily_adherence = (total_daily_reached_fg / total_daily_target) * 100
-        else:
-            daily_adherence = 100.0 if total_daily_reached_fg > 0 else 0.0
+            daily_adherence = (total_daily_dispatched / total_daily_target) * 100
 
-        # =================================================
-        # 2. MONTHLY ADHERENCE (FG / MonthlyAvg) - Unchanged
-        # =================================================
-
-        # A. Get Target (Sum of MonthlyAvg)
-        sql_monthly_target = f"SELECT SUM(ISNULL(m.[MonthlyAvg], 0)) {base_query_master} {filter_clause}"
-        cursor.execute(sql_monthly_target, params)
-        total_monthly_avg = cursor.fetchone()[0] or 0
-
-        # B. Get Actual (Sum of items moved to 'FG' this month)
-        sql_monthly_actual = f"""
-            SELECT SUM(pl.quantity) 
-            FROM production_log pl
-            JOIN master m ON pl.item_code = m.[Item code]
-            WHERE pl.to_stage = 'FG' 
-            AND MONTH(pl.moved_at) = MONTH(GETDATE()) 
-            AND YEAR(pl.moved_at) = YEAR(GETDATE())
-            {filter_clause}
-        """
-        cursor.execute(sql_monthly_actual, params)
-        total_monthly_reached_fg = cursor.fetchone()[0] or 0
-
-        if total_monthly_avg > 0:
-            monthly_adherence = (total_monthly_reached_fg / total_monthly_avg) * 100
-        else:
-            monthly_adherence = 100.0 if total_monthly_reached_fg > 0 else 0.0
-
-    except Exception as e:
-        print(f"Error calculating adherence: {e}")
+    except Exception:
         traceback.print_exc()
 
-    return {'daily_adherence': daily_adherence, 'monthly_adherence': monthly_adherence}
-
+    # Only return daily adherence
+    return {'daily_adherence': daily_adherence}
 
 
 @app.route('/dispatch_item', methods=['POST'])
@@ -960,17 +1273,30 @@ def api_plan_page():
     page = request.args.get('page', 1, type=int)
     per_page = 17
     offset = (page - 1) * per_page
+    
+    # --- NEW: Get Type Filter ---
+    filter_type = request.args.get('type') 
+    
     conn = get_db_connection()
     if not conn: return jsonify({'status': 'error', 'message': 'Database connection failed.'}), 500
 
     try:
         cursor = conn.cursor()
-        show_failure_button = True
-        cursor.execute("SELECT COUNT(*) FROM Production_pl")
+        
+        # Build Filter Clause
+        where_clause = ""
+        params = []
+        if filter_type:
+            where_clause = " WHERE m.[Type] = ?"
+            params.append(filter_type)
+
+        # Count Total
+        count_sql = f"SELECT COUNT(*) FROM Production_pl p LEFT JOIN master m ON p.[Item code ] = m.[Item code] {where_clause}"
+        cursor.execute(count_sql, params)
         total = cursor.fetchone()[0]
         total_pages = ceil(total / per_page) if total > 0 else 1
 
-        sql_top_plans = """
+        sql_top_plans = f"""
             DECLARE @CurrentProductionDate DATE = CAST(DATEADD(hour, -2, GETDATE()) AS DATE);
             DECLARE @ProductionDayStart DATETIME = DATEADD(hour, 2, CAST(@CurrentProductionDate AS DATETIME));
             DECLARE @ProductionDayEnd DATETIME = DATEADD(day, 1, @ProductionDayStart);
@@ -979,61 +1305,51 @@ def api_plan_page():
                 SELECT item_code, MAX(reason) as reason 
                 FROM failure_log WHERE failure_date = @CurrentProductionDate GROUP BY item_code
             ),
-            ItemsReachedFG AS (
-                SELECT item_code, SUM(quantity) as QtyReachedFG 
-                FROM production_log 
-                WHERE to_stage = 'FG' AND moved_at >= @ProductionDayStart AND moved_at < @ProductionDayEnd 
-                GROUP BY item_code
-            ),
-            -- NEW CTE FOR DISPATCH LOGS
             TodayDispatch AS (
                 SELECT item_code, SUM(quantity) as QtyDispatched
                 FROM production_log
-                WHERE to_stage = 'Dispatch' 
+                WHERE to_stage IN ('Dispatch', 'Delivered') 
                 AND moved_at >= @ProductionDayStart AND moved_at < @ProductionDayEnd
                 GROUP BY item_code
             )
             SELECT
                 p.[S.No.], p.[Item code ], p.[Description], 
                 ISNULL(m.[Pending], 0) AS [Opening Trigger],
-
+                ISNULL(m.[Next Pending], 0) AS [Next Pending],
                 (ISNULL(m.[Pending], 0) - ISNULL(td.QtyDispatched, 0)) AS [Pending],
-
                 p.[Today Triggered] AS [Released Qty], 
                 m.[FG], 
-                ISNULL(td.QtyDispatched, 0) as [Dispatch], -- UPDATED
+                ISNULL(td.QtyDispatched, 0) as [Dispatch],
                 ISNULL(m.[Powder coating], 0) AS [Powder coating],
                 ISNULL(m.[Hydro Testing], 0) AS [Hydro Testing],
-
                 CASE WHEN ISNULL(m.[Pending], 0) > 0
                     THEN (CAST(ISNULL(td.QtyDispatched, 0) AS FLOAT) * 100.0 / CAST(m.[Pending] AS FLOAT))
                     ELSE 100.0 END AS ItemAdherencePercent,
-
                 (ISNULL(m.[Pending], 0) - ISNULL(td.QtyDispatched, 0)) AS FailureInTrigger,
-
                 cfr.reason AS SavedReason
             FROM Production_pl p
             LEFT JOIN master m ON p.[Item code ] = m.[Item code]
             LEFT JOIN CurrentFailureReasons cfr ON p.[Item code ] = cfr.item_code
-            LEFT JOIN ItemsReachedFG fg ON p.[Item code ] = fg.item_code
             LEFT JOIN TodayDispatch td ON p.[Item code ] = td.item_code
-
-            -- Sort Non-Zero Triggers to the top, then by Weight
+            {where_clause} -- Apply Filter
             ORDER BY 
                 CASE WHEN ISNULL(m.[Pending], 0) > 0 THEN 1 ELSE 0 END DESC,
                 p.[priority_weight] DESC, 
                 p.[S.No.] ASC
             OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
         """
-        cursor.execute(sql_top_plans, (offset, per_page))
+        # Add pagination params to the end
+        params.extend([offset, per_page])
+        
+        cursor.execute(sql_top_plans, params)
         plans = [row_to_dict(cursor, row) for row in cursor.fetchall()]
 
-        return jsonify({'status': 'success', 'plans': plans, 'total_pages': total_pages, 'current_page': page,
-                        'per_page': per_page, 'show_failure_button': show_failure_button})
+        return jsonify({'status': 'success', 'plans': plans, 'total_pages': total_pages, 'current_page': page, 'per_page': per_page, 'show_failure_button': True})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
     finally:
         if conn: conn.close()
+
 
 @app.route('/api/log_failure_reason', methods=['POST'])
 def log_failure_reason():
@@ -1091,6 +1407,7 @@ def log_failure_reason():
 # REPLACE your existing 'attendance' function with this one
 
 @app.route('/attendance', methods=['GET'], endpoint='attendance')
+@login_required  
 def attendance():
     start_date_str = request.args.get('start_date')
     selected_stage = request.args.get('stage', 'All')
@@ -1205,73 +1522,6 @@ def attendance():
                            )
 
 
-# In app/routes.py
-# REPLACE the existing upload_file function with this
-
-@app.route('/upload_master', methods=['POST'], endpoint='upload_master_file')
-def upload_master_file():
-    # This route now ONLY handles the POST for uploading the master file
-    if 'file' not in request.files:
-        flash('No file part in the request.', 'error')
-        return redirect(request.referrer or url_for('production_planning'))  # Go back
-
-    file = request.files['file']
-    if file.filename == '':
-        flash('No file selected.', 'error')
-        return redirect(request.referrer or url_for('production_planning'))
-
-    if not file.filename.endswith(('.xlsx', '.xls')):
-        flash('Invalid file type. Please upload .xlsx or .xls', 'error')
-        return redirect(request.referrer or url_for('production_planning'))
-
-    filepath, conn = None, None
-    try:
-        filename = secure_filename(file.filename)
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(filepath)
-
-        conn = get_db_connection()
-        if not conn: raise ConnectionError("Database connection failed.")
-
-        cursor = conn.cursor()
-        df_master = pd.read_excel(filepath, sheet_name=0)
-
-        # --- Robust duplicate and data type handling ---
-        item_code_col = None
-        for col in df_master.columns:
-            if 'item code' in str(col).strip().lower():
-                item_code_col = col
-                break
-
-        if item_code_col:
-            df_master[item_code_col] = df_master[item_code_col].astype(str).str.replace(r'\.0$', '', regex=True)
-            df_master[item_code_col] = df_master[item_code_col].str.strip()
-            df_master.drop_duplicates(subset=[item_code_col], keep='first', inplace=True)
-        else:
-            flash("Upload Failed: Could not find a column named 'Item code' in the uploaded Excel file.", "error")
-            return redirect(request.referrer or url_for('production_planning'))
-
-        # --- Convert all numeric columns to whole numbers ---
-        for col in df_master.columns:
-            if col != item_code_col:
-                df_master[col] = pd.to_numeric(df_master[col], errors='ignore')
-
-        numeric_cols = df_master.select_dtypes(include=np.number).columns
-        df_master[numeric_cols] = df_master[numeric_cols].fillna(0).astype(int)
-
-        replace_table_with_df(df_master, 'master', cursor)
-        conn.commit()
-        flash('Master data uploaded successfully!', 'success')
-
-    except Exception as e:
-        if conn: conn.rollback()
-        traceback.print_exc()
-        flash(f"An unexpected error occurred: {e}", 'error')
-    finally:
-        if conn: conn.close()
-        if filepath and os.path.exists(filepath): os.remove(filepath)
-
-    return redirect(request.referrer or url_for('production_planning'))  # Go back to page
 
 
 # In app/routes.py
@@ -1418,6 +1668,8 @@ def generate_plan():
 
     return redirect(url_for('production_planning'))
 
+
+
 @app.route('/delete_triggers', methods=['POST'], endpoint='delete_triggers')
 def delete_triggers():
     conn = get_db_connection()
@@ -1427,20 +1679,29 @@ def delete_triggers():
 
     try:
         cursor = conn.cursor()
-        # Clear the table
+        
+        now = datetime.now()
+        current_date = (now - timedelta(days=1)).date() if now.hour < 2 else now.date()
+
+        # 1. Clear raw table
         cursor.execute("IF OBJECT_ID('dbo.pending_triggers', 'U') IS NOT NULL DELETE FROM pending_triggers")
-        # Clear the master pending column
-        cursor.execute("IF OBJECT_ID('dbo.master', 'U') IS NOT NULL UPDATE master SET [Pending] = 0")
-        # Reset the timestamp status
+        
+        # 2. Reset master quantities
+        cursor.execute("IF OBJECT_ID('dbo.master', 'U') IS NOT NULL UPDATE master SET [Pending] = 0, [Next Pending] = 0")
+        
+        # 3. Manual Reset: Remove from history (because the user is manually "undoing" today's upload)
+        cursor.execute("DELETE FROM trigger_history WHERE upload_date = ?", current_date)
+        
+        # 4. Reset status
         cursor.execute("UPDATE app_status SET status_value = NULL WHERE status_key = 'last_triggers_upload_timestamp'")
 
         conn.commit()
-        flash('Pending triggers file removed and Pending quantities reset to 0.', 'success')
+        flash("Pending triggers removed and today's history entry cleared.", "success")
     except Exception as e:
-        flash(f'Error deleting triggers: {e}', 'error')
+        flash(f'Error: {e}', 'error')
         if conn: conn.rollback()
     finally:
-        conn.close()
+        if conn: conn.close()
 
     return redirect(request.referrer or url_for('production_planning'))
 
@@ -1511,18 +1772,6 @@ def update_single_plan():
     finally:
         if conn: conn.close()
 
-# In app/routes.py
-# REPLACE your move_item function with this debug version (with flush=True)
-
-# In app/routes.py
-# REPLACE your existing move_item function
-
-# In app/routes.py
-
-# In app/routes.py
-
-# In app/routes.py
-
 @app.route('/move_item', methods=['POST'])
 def move_item():
     # Get form data
@@ -1542,6 +1791,19 @@ def move_item():
     if not all([item_code, from_stage, to_stage, quantity]):
         return jsonify({'status': 'error', 'message': 'Missing required fields.'}), 400
 
+    # --- HANDLE VIRTUAL GROUP DESTINATION ---
+    # If moving items BACK to "Before Hydro", place them in the last stage of that group ("Full welding")
+    if to_stage == 'Before Hydro':
+        to_stage = 'Full welding'
+
+    # --- SAFETY CHECK FOR VIRTUAL GROUP SOURCE ---
+    # We cannot deduct from "Before Hydro" directly; the frontend must resolve this to a concrete sub-stage.
+    if from_stage == 'Before Hydro':
+        return jsonify({
+            'status': 'error', 
+            'message': 'System Error: Cannot move directly from "Before Hydro" group without a resolved sub-stage. Please refresh the page and try again.'
+        }), 400
+
     try:
         quantity = int(quantity)
         if quantity <= 0:
@@ -1557,6 +1819,7 @@ def move_item():
         cursor = conn.cursor()
 
         # 1. CHECK STOCK
+        # We wrap stage names in brackets to handle spaces safely
         cursor.execute(f"SELECT [{from_stage}] FROM master WHERE [Item code] = ?", (item_code,))
         row = cursor.fetchone()
 
@@ -1581,9 +1844,7 @@ def move_item():
             cursor.execute(f"UPDATE master SET [{to_stage}] = ISNULL([{to_stage}], 0) + ? WHERE [Item code] = ?",
                            (quantity, item_code))
 
-        # 3. HANDLE DISPATCH COUNT (The Fix)
-        # FIX: Only update Production_pl 'Dispatch' count if explicitly moving to 'Dispatch'.
-        # Moving to 'FG' will NO LONGER increment this count.
+        # 3. HANDLE DISPATCH COUNT
         if to_stage == 'Dispatch':
             cursor.execute("""
                 UPDATE Production_pl 
@@ -1608,6 +1869,8 @@ def move_item():
         return jsonify({'status': 'error', 'message': str(e)}), 500
     finally:
         if conn: conn.close()
+
+
 @app.route('/deliver_item', methods=['POST'], endpoint='deliver_item')
 def deliver_item():
     data = request.get_json()
@@ -1768,20 +2031,9 @@ def update_weights():
         traceback.print_exc()
     return redirect(url_for('production_planning'))
 
-
-# In app/routes.py
-# ADD THIS NEW FUNCTION
-
-# In app/routes.py
-
 @app.route('/transfer_worker', methods=['POST'], endpoint='transfer_worker')
 def transfer_worker():
     pass
-
-# (In app/routes.py)
-
-# In app/routes.py
-# REPLACE your existing 'mark_single_attendance' function
 
 @app.route('/attendance/mark_single', methods=['POST'])
 def mark_single_attendance():
@@ -1801,17 +2053,30 @@ def mark_single_attendance():
         cursor = conn.cursor()
         attendance_date = datetime.strptime(date_str, '%Y-%m-%d').date()
 
-        # If the status value is empty (user selected "--") or "Absent", delete the record.
-        if not value or value == 'Absent':
-            # 1. Delete from attendance_log
-            delete_sql = "DELETE FROM attendance_log WHERE employee_code = ? AND attendance_date = ?"
-            cursor.execute(delete_sql, e_code, attendance_date)
+        # CASE 1: Value is empty (User selected "--") -> CLEAR RECORD
+        if not value:
+            # Delete from attendance_log
+            cursor.execute("DELETE FROM attendance_log WHERE employee_code = ? AND attendance_date = ?", e_code, attendance_date)
+            # Delete from daily_roster (not working)
+            cursor.execute("DELETE FROM daily_roster WHERE employee_code = ? AND roster_date = ?", e_code, attendance_date)
 
-            # 2. Delete from daily_roster
-            delete_roster_sql = "DELETE FROM daily_roster WHERE employee_code = ? AND roster_date = ?"
-            cursor.execute(delete_roster_sql, e_code, attendance_date)
+        # CASE 2: Value is "Absent" -> SAVE ABSENT, REMOVE FROM ROSTER
+        elif value == 'Absent':
+            # UPSERT into attendance_log as 'Absent'
+            upsert_log_sql = """
+            MERGE attendance_log AS target
+            USING (SELECT ? AS employee_code, ? AS attendance_date, 'Absent' AS status, NULL AS shift) AS source
+            ON (target.employee_code = source.employee_code AND target.attendance_date = source.attendance_date)
+            WHEN MATCHED THEN UPDATE SET status = source.status, shift = source.shift
+            WHEN NOT MATCHED THEN INSERT (employee_code, attendance_date, status, shift)
+            VALUES (source.employee_code, source.attendance_date, source.status, source.shift);"""
+            cursor.execute(upsert_log_sql, e_code, attendance_date)
 
-        else:  # Status is "Present"
+            # Remove from daily_roster since they are absent
+            cursor.execute("DELETE FROM daily_roster WHERE employee_code = ? AND roster_date = ?", e_code, attendance_date)
+
+        # CASE 3: Value is "Present" (e.g., "Present-1") -> SAVE PRESENT, ADD TO ROSTER
+        else:
             status_val = None
             shift_val = None
             if '-' in value:
@@ -1831,7 +2096,8 @@ def mark_single_attendance():
             VALUES (source.employee_code, source.attendance_date, source.status, source.shift);"""
             cursor.execute(upsert_log_sql, e_code, attendance_date, status_val, shift_val)
 
-            # 2. MERGE into daily_roster (to add them if not present)
+            # 2. MERGE into daily_roster (Add them to roster if they aren't there yet)
+            # We assume if they are present, they are working their default stage unless transferred
             merge_roster_sql = """
             MERGE daily_roster AS target
             USING (
@@ -1844,26 +2110,17 @@ def mark_single_attendance():
                 INSERT (roster_date, employee_code, employee_name, default_stage, assigned_stage)
                 VALUES (?, source.[E.code], source.[Name of the Employee], source.[Stage], source.[Stage]);
             """
-            # Note: WHEN MATCHED, we do nothing, preserving any temporary transfer.
             cursor.execute(merge_roster_sql, e_code, attendance_date, attendance_date)
 
         conn.commit()
         return jsonify({'status': 'success'})
+
     except Exception as e:
         if conn: conn.rollback()
         traceback.print_exc()
         return jsonify({'status': 'error', 'message': str(e)}), 500
     finally:
         if conn: conn.close()
-
-
-# In app/routes.py
-# REPLACE your existing 'add_employee' function with this one
-
-# In app/routes.py
-# MAKE SURE YOU ONLY HAVE THIS VERSION
-
-
 
 
 @app.route('/attendance/working_day', methods=['POST'], endpoint='mark_working_day')
@@ -1896,7 +2153,6 @@ def mark_working_day():
     finally:
         if conn: conn.close()
     return redirect(url_for('attendance', start_date=start_date))
-
 
 @app.route('/attendance/export', methods=['GET'], endpoint='export_attendance')
 def export_attendance():
@@ -1931,7 +2187,6 @@ def export_attendance():
         return redirect(url_for('attendance'))
     finally:
         if conn: conn.close()
-
 
 @app.route('/add_employee', methods=['POST'], endpoint='add_employee')
 def add_employee():
@@ -1972,9 +2227,6 @@ def add_employee():
         if conn: conn.close()
     # Redirect to the manage view by default
     return redirect(url_for('attendance', view='manage'))
-
-
-# In app/routes.py
 
 @app.route('/edit_employee', methods=['POST'], endpoint='edit_employee')
 def edit_employee():
@@ -2057,8 +2309,6 @@ def add_holiday():
         if conn: conn.close()
     return redirect(url_for('attendance', start_date=start_date))
 
-
-
 @app.route('/remove_employee', methods=['POST'], endpoint='remove_employee')
 def remove_employee():
     e_code, start_date = request.form.get('e_code'), request.form.get('start_date')
@@ -2106,41 +2356,10 @@ def create_and_insert_employee(e_code, name, company, stage, doj_date, default_s
         if conn: conn.close()
 
 
-@app.route('/delete_master', methods=['POST'], endpoint='delete_master_data')
-def delete_master_data():
-    conn = get_db_connection()
-    if conn:
-        try:
-            cursor = conn.cursor()
-            cursor.execute("IF OBJECT_ID('dbo.master', 'U') IS NOT NULL DROP TABLE dbo.master")
-            cursor.execute("IF OBJECT_ID('dbo.Production_pl', 'U') IS NOT NULL DELETE FROM dbo.Production_pl")
-            cursor.execute("IF OBJECT_ID('dbo.production_log', 'U') IS NOT NULL DELETE FROM dbo.production_log")
-            cursor.execute("IF OBJECT_ID('dbo.flagged_items', 'U') IS NOT NULL DELETE FROM dbo.flagged_items")
-            cursor.execute("IF OBJECT_ID('dbo.pending_triggers', 'U') IS NOT NULL DELETE FROM dbo.pending_triggers")
-            cursor.execute(
-                "IF OBJECT_ID('dbo.app_status', 'U') IS NOT NULL DELETE FROM dbo.app_status")  # Clear status table
-            conn.commit()
-            flash("All master data, plans, and logs have been successfully cleared.", "success")
-        except Exception as e:
-            flash(f"An error occurred while deleting the data: {e}", "error")
-        finally:
-            conn.close()
-    else:
-        flash("Could not connect to the database.", "error")
-    return redirect(request.referrer or url_for('production_planning'))
-
-
-# (In app/routes.py)
-
-# (In app/routes.py)
-
-# (In app/routes.py)
-
 # In app/routes.py
 
 @app.route('/upload_triggers', methods=['POST'], endpoint='upload_triggers')
 def upload_triggers():
-    # 1. FIX: Redirect to referrer instead of 'upload' on error
     if 'file' not in request.files or request.files['file'].filename == '':
         flash('No file selected. Please choose a CSV file.', 'error')
         return redirect(request.referrer or url_for('production_planning'))
@@ -2177,32 +2396,106 @@ def upload_triggers():
         # 2. Clean the data
         df[item_code_col] = df[item_code_col].astype(str).str.strip().str.lstrip("'")
         df[qty_col] = pd.to_numeric(df[qty_col], errors='coerce').fillna(0)
+        
+        due_dt_col = None
         for col_name in ['TRIGGER DT', 'DUE DT']:
             actual_col = next((c for c in df.columns if str(c).strip().upper() == col_name), None)
             if actual_col:
-                df[actual_col] = pd.to_datetime(df[actual_col], errors='coerce')
+                # 'dayfirst=True' ensures 05-01-2026 is read as Jan 5th, not May 1st
+                df[actual_col] = pd.to_datetime(df[actual_col], dayfirst=True, errors='coerce')
+                if str(actual_col).strip().upper() == 'DUE DT':
+                    due_dt_col = actual_col
 
-        # 3. Aggregate the cleaned data
-        aggregated_triggers = df.groupby(item_code_col)[qty_col].sum().reset_index()
+        # --- LOGIC: Define Time Windows ---
+        # Using date.today() allows seamless year transition (e.g. Dec 23 -> Jan 23)
+        today_date = date.today()
+        
+        # Calculate 31 days into the future
+        cutoff_date = today_date + timedelta(days=31)
+        
+        # Initialize DataFrames
+        df_today = df.copy() 
+        df_future = pd.DataFrame(columns=df.columns)
+
+        if due_dt_col:
+            # 1. Pending: Due Date is TODAY or Earlier (Overdue)
+            df_today = df[df[due_dt_col].dt.date <= today_date]
+            
+            # 2. Next Pending: Due Date is TOMORROW -> NEXT 31 DAYS
+            # Logic: (Date > Today) AND (Date <= Today + 31 Days)
+            # This logic works correctly across year boundaries (e.g. Dec 2025 to Jan 2026)
+            df_future = df[
+                (df[due_dt_col].dt.date > today_date) & 
+                (df[due_dt_col].dt.date <= cutoff_date)
+            ]
+
+        # Aggregate Quantities per Item
+        agg_today = df_today.groupby(item_code_col)[qty_col].sum().reset_index()
+        agg_future = df_future.groupby(item_code_col)[qty_col].sum().reset_index()
 
         conn = get_db_connection()
         if not conn: raise ConnectionError("Database connection failed.")
         cursor = conn.cursor()
 
-        # 4. Save full details
+        # ---------------------------------------------------------
+        # HISTORY LOGGING (Keeps record of "Pending" for today)
+        # ---------------------------------------------------------
+        
+        cursor.execute("""
+            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='trigger_history' and xtype='U')
+            CREATE TABLE trigger_history (
+                history_id INT IDENTITY(1,1) PRIMARY KEY,
+                upload_date DATE NOT NULL,
+                item_code NVARCHAR(255) NOT NULL,
+                pending_quantity INT NOT NULL,
+                created_at DATETIME DEFAULT GETDATE()
+            );
+        """)
+        
+        # Clear previous history for TODAY only (allows re-upload fix)
+        cursor.execute("DELETE FROM trigger_history WHERE upload_date = ?", today_date)
+
+        # Insert New Snapshot
+        history_params = [
+            (today_date, str(row[item_code_col]), row[qty_col]) 
+            for index, row in agg_today.iterrows() 
+            if row[qty_col] > 0
+        ]
+        
+        if history_params:
+            cursor.executemany("""
+                INSERT INTO trigger_history (upload_date, item_code, pending_quantity) 
+                VALUES (?, ?, ?)
+            """, history_params)
+
+        # ---------------------------------------------------------
+        # UPDATE MASTER TABLE
+        # ---------------------------------------------------------
+
+        # Ensure 'Next Pending' column exists
+        cursor.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'Next Pending' AND Object_ID = Object_ID(N'master'))
+                ALTER TABLE master ADD [Next Pending] INT DEFAULT 0 WITH VALUES;
+        """)
+        conn.commit()
+
+        # Save full raw details to 'pending_triggers' table
         replace_table_with_df(df, 'pending_triggers', cursor)
 
-        # 5. Update master table
+        # Reset Master Columns (Pending & Next Pending) to 0 before update
+        cursor.execute("UPDATE master SET [Pending] = 0, [Next Pending] = 0")
+
+        # Update [Pending] (Today/Overdue)
         update_count = 0
-        cursor.execute("UPDATE master SET [Pending] = 0")
-        for index, row in aggregated_triggers.iterrows():
-            item_code = row[item_code_col]
-            total_qty = row[qty_col]
-            update_sql = "UPDATE master SET [Pending] = ? WHERE [Item code] = ?"
-            cursor.execute(update_sql, total_qty, str(item_code))
+        for index, row in agg_today.iterrows():
+            cursor.execute("UPDATE master SET [Pending] = ? WHERE [Item code] = ?", row[qty_col], str(row[item_code_col]))
             update_count += cursor.rowcount
 
-        # Record timestamp
+        # Update [Next Pending] (Tomorrow to 31 Days)
+        for index, row in agg_future.iterrows():
+            cursor.execute("UPDATE master SET [Next Pending] = ? WHERE [Item code] = ?", row[qty_col], str(row[item_code_col]))
+
+        # Record Upload Timestamp
         upsert_sql = """
             MERGE app_status AS target
             USING (SELECT 'last_triggers_upload_timestamp' AS src_key, ? AS src_val) AS src 
@@ -2216,7 +2509,8 @@ def upload_triggers():
         cursor.execute(upsert_sql, now_timestamp)
 
         conn.commit()
-        flash(f'Pending triggers uploaded successfully. {update_count} item(s) updated.', 'success')
+        
+        flash(f'Triggers uploaded. Updated {update_count} items in Pending. "Next Pending" updated for the next 31 days.', 'success')
 
     except Exception as e:
         if conn: conn.rollback()
@@ -2226,43 +2520,51 @@ def upload_triggers():
         if conn: conn.close()
         if filepath and os.path.exists(filepath): os.remove(filepath)
 
-    # 2. FIX: Redirect to referrer instead of 'upload' on success/error catch
     return redirect(request.referrer or url_for('production_planning'))
-
-
-
 @app.route('/api/stage_totals')
 def api_stage_totals():
     """
-    API endpoint to return the current WIP stage totals as JSON.
+    API endpoint to return the current WIP stage totals AND Monthly Data.
     """
     stage_totals = {}
     conn = get_db_connection()
     if conn:
         try:
             cursor = conn.cursor()
-            # Fetch Dynamic Stages
+            
+            # 1. Fetch WIP Stage Totals
             current_stages = get_dynamic_stages(cursor, dashboard_only=True)
-
             if current_stages:
                 sum_clauses = [f"SUM(ISNULL([{stage}], 0)) as [{stage}]" for stage in current_stages]
-                # Join with comma
-                sql_query = f"SELECT {', '.join(sum_clauses)}, SUM(ISNULL([Live Dispatch], 0)) as [Dispatch] FROM master"
-            else:
-                # Fallback if no stages are selected for dashboard
-                sql_query = "SELECT SUM(ISNULL([Live Dispatch], 0)) as [Dispatch] FROM master"
+                sql_wip = f"SELECT {', '.join(sum_clauses)} FROM master"
+                cursor.execute(sql_wip)
+                row = cursor.fetchone()
+                if row:
+                    stage_totals = row_to_dict(cursor, row)
+            
+            # 2. Fetch Monthly Dispatch
+            sql_monthly = """
+                SELECT SUM(quantity) FROM production_log 
+                WHERE to_stage IN ('Dispatch', 'Delivered') 
+                AND MONTH(moved_at) = MONTH(GETDATE()) 
+                AND YEAR(moved_at) = YEAR(GETDATE())
+            """
+            cursor.execute(sql_monthly)
+            monthly_val = cursor.fetchone()[0] or 0
+            stage_totals['Dispatch'] = monthly_val
 
-            cursor.execute(sql_query)
-            row = cursor.fetchone()
-            if row:
-                stage_totals = row_to_dict(cursor, row)
+            # 3. Calculate Monthly Trigger Adherence (NEW FORMULA)
+            monthly_adherence_val = calculate_monthly_trigger_adherence(conn)
+            stage_totals['MonthlyTriggerAdherence'] = monthly_adherence_val
+
         except Exception as e:
             print(f"API Error fetching stage totals: {e}")
+            traceback.print_exc()
         finally:
             conn.close()
     return jsonify(stage_totals)
 
-@app.route('/api/inventory/<item_code>')
+
 @app.route('/api/inventory/<item_code>')
 def get_inventory_for_item(item_code):
     """
@@ -2286,7 +2588,6 @@ def get_inventory_for_item(item_code):
     return jsonify(inventory)
 
 @app.route('/api/inventory/vertical/<vertical_name>')
-@app.route('/api/inventory/vertical/<vertical_name>')
 def get_inventory_for_vertical(vertical_name):
     """
     API endpoint to return the SUM of inventory for a given Vertical.
@@ -2307,8 +2608,6 @@ def get_inventory_for_vertical(vertical_name):
         finally:
             if conn: conn.close()
     return jsonify(inventory)
-
-
 
 @app.route('/api/inventory/category/<category_name>')
 def get_inventory_for_category(category_name):
@@ -2332,103 +2631,64 @@ def get_inventory_for_category(category_name):
             if conn: conn.close()
     return jsonify(inventory)
 
-# In app/routes.py
-
-def calculate_adherence(conn, item_codes=None, verticals=None, categories=None):
+def calculate_adherence(conn, item_codes=None, verticals=None, categories=None, types=None):
     """
-    Helper function to calculate adherence based on DISPATCH vs TARGET.
-    Daily Adherence = (Daily Dispatch / Opening Trigger) * 100
-    Monthly Adherence = (Monthly Dispatch / Monthly Avg) * 100
+    Helper function: Calculates ONLY Daily Adherence.
+    Monthly Adherence references removed.
     """
     daily_adherence = 0
-    monthly_adherence = 0
 
-    base_query_master = "FROM master m WHERE 1=1"
-    filter_clause = ""
+    # 1. Build Filter Logic
+    filter_clause_master = ""  
     params = []
 
     if item_codes:
         seq = ','.join(['?'] * len(item_codes))
-        filter_clause = f" AND m.[Item code] IN ({seq})"
+        filter_clause_master += f" AND m.[Item code] IN ({seq})"
         params.extend(item_codes)
-    elif verticals:
+    if verticals:
         seq = ','.join(['?'] * len(verticals))
-        filter_clause = f" AND m.[Vertical] IN ({seq})"
+        filter_clause_master += f" AND m.[Vertical] IN ({seq})"
         params.extend(verticals)
-    elif categories:
+    if categories:
         seq = ','.join(['?'] * len(categories))
-        filter_clause = f" AND m.[Category] IN ({seq})"
+        filter_clause_master += f" AND m.[Category] IN ({seq})"
         params.extend(categories)
+    if types:
+        seq = ','.join(['?'] * len(types))
+        filter_clause_master += f" AND m.[Type] IN ({seq})"
+        params.extend(types)
 
     try:
         cursor = conn.cursor()
 
-        # =================================================
-        # 1. DAILY ADHERENCE (Dispatch / Opening Trigger)
-        # =================================================
-
-        # A. Get Target (Sum of Pending / Opening Trigger)
-        # Note: In your logic, 'Pending' in master is the Opening Trigger for the day
-        sql_daily_target = f"SELECT SUM(ISNULL(m.[Pending], 0)) {base_query_master} {filter_clause}"
+        # --- DAILY ADHERENCE ---
+        sql_daily_target = f"SELECT SUM(ISNULL(m.[Pending], 0)) FROM master m WHERE 1=1 {filter_clause_master}"
         cursor.execute(sql_daily_target, params)
         total_daily_target = cursor.fetchone()[0] or 0
 
-        # B. Get Actual (Sum of items moved to 'Dispatch' today)
-        # Using 2 AM cutoff
         sql_daily_actual = f"""
             DECLARE @CurrentProductionDate DATE = CAST(DATEADD(hour, -2, GETDATE()) AS DATE);
             DECLARE @ProductionDayStart DATETIME = DATEADD(hour, 2, CAST(@CurrentProductionDate AS DATETIME));
             DECLARE @ProductionDayEnd DATETIME = DATEADD(day, 1, @ProductionDayStart);
 
-            SELECT SUM(pl.quantity) 
-            FROM production_log pl
-            JOIN master m ON pl.item_code = m.[Item code]
-            WHERE pl.to_stage = 'Dispatch' 
+            SELECT SUM(pl.quantity) FROM production_log pl
+            INNER JOIN master m ON pl.item_code = m.[Item code]
+            WHERE pl.to_stage IN ('Dispatch', 'Delivered') 
             AND pl.moved_at >= @ProductionDayStart AND pl.moved_at < @ProductionDayEnd
-            {filter_clause}
+            {filter_clause_master}
         """
         cursor.execute(sql_daily_actual, params)
         total_daily_dispatched = cursor.fetchone()[0] or 0
 
         if total_daily_target > 0:
             daily_adherence = (total_daily_dispatched / total_daily_target) * 100
-        else:
-            # If target is 0, but we dispatched something, it's 100% (or bonus)
-            daily_adherence = 100.0 if total_daily_dispatched > 0 else 0.0
 
-        # =================================================
-        # 2. MONTHLY ADHERENCE (Monthly Dispatch / Monthly Avg)
-        # =================================================
-
-        # A. Get Target (Sum of MonthlyAvg)
-        sql_monthly_target = f"SELECT SUM(ISNULL(m.[MonthlyAvg], 0)) {base_query_master} {filter_clause}"
-        cursor.execute(sql_monthly_target, params)
-        total_monthly_avg = cursor.fetchone()[0] or 0
-
-        # B. Get Actual (Sum of items moved to 'Dispatch' this month)
-        sql_monthly_actual = f"""
-            SELECT SUM(pl.quantity) 
-            FROM production_log pl
-            JOIN master m ON pl.item_code = m.[Item code]
-            WHERE pl.to_stage = 'Dispatch' 
-            AND MONTH(pl.moved_at) = MONTH(GETDATE()) 
-            AND YEAR(pl.moved_at) = YEAR(GETDATE())
-            {filter_clause}
-        """
-        cursor.execute(sql_monthly_actual, params)
-        total_monthly_dispatched = cursor.fetchone()[0] or 0
-
-        if total_monthly_avg > 0:
-            monthly_adherence = (total_monthly_dispatched / total_monthly_avg) * 100
-        else:
-            monthly_adherence = 100.0 if total_monthly_dispatched > 0 else 0.0
-
-    except Exception as e:
-        print(f"Error calculating adherence: {e}")
+    except Exception:
         traceback.print_exc()
 
-    return {'daily_adherence': daily_adherence, 'monthly_adherence': monthly_adherence}
-
+    # RETURN ONLY DAILY ADHERENCE
+    return {'daily_adherence': daily_adherence}
 
 @app.route('/api/adherence/totals')
 def api_adherence_totals():
@@ -2484,66 +2744,79 @@ def api_inventory_filtered():
     item_codes = data.get('item_code', [])
     verticals = data.get('vertical', [])
     categories = data.get('category', [])
+    # --- NEW: Get Type ---
+    types = data.get('type', [])
 
     inventory = {}
     conn = get_db_connection()
     if conn:
         try:
             cursor = conn.cursor()
-            stage_columns_sum = ', '.join([f"SUM(ISNULL([{stage}], 0)) as [{stage}]" for stage in
-                                           STAGES]) + ', SUM(ISNULL([Live Dispatch], 0)) as [Dispatch]'
-
-            sql_query = f"SELECT {stage_columns_sum} FROM master WHERE 1=1"
+            
+            # --- 1. Build Filter Logic ---
+            base_filter = ""
             params = []
 
             if item_codes:
                 seq = ','.join(['?'] * len(item_codes))
-                sql_query += f" AND [Item code] IN ({seq})"
+                base_filter += f" AND [Item code] IN ({seq})"
                 params.extend(item_codes)
-            elif verticals:
+            if verticals:
                 seq = ','.join(['?'] * len(verticals))
-                sql_query += f" AND [Vertical] IN ({seq})"
+                base_filter += f" AND [Vertical] IN ({seq})"
                 params.extend(verticals)
-            elif categories:
+            if categories:
                 seq = ','.join(['?'] * len(categories))
-                sql_query += f" AND [Category] IN ({seq})"
+                base_filter += f" AND [Category] IN ({seq})"
                 params.extend(categories)
+            # --- NEW: SQL for Type ---
+            if types:
+                seq = ','.join(['?'] * len(types))
+                base_filter += f" AND [Type] IN ({seq})"
+                params.extend(types)
 
-            cursor.execute(sql_query, params)
+            # --- 2. Get WIP Totals ---
+            current_stages = get_dynamic_stages(cursor, dashboard_only=True)
+            if not current_stages: current_stages = STAGES 
+
+            stage_columns_sum = ', '.join([f"SUM(ISNULL([{stage}], 0)) as [{stage}]" for stage in current_stages])
+            
+            sql_wip = f"SELECT {stage_columns_sum} FROM master WHERE 1=1 {base_filter}"
+            cursor.execute(sql_wip, params)
             row = cursor.fetchone()
             if row:
                 inventory = row_to_dict(cursor, row)
+
+            # --- 3. Get Monthly Dispatch ---
+            sql_monthly = f"""
+                SELECT SUM(pl.quantity) 
+                FROM production_log pl
+                JOIN master m ON pl.item_code = m.[Item code]
+                WHERE pl.to_stage IN ('Dispatch', 'Delivered') 
+                AND MONTH(pl.moved_at) = MONTH(GETDATE()) 
+                AND YEAR(pl.moved_at) = YEAR(GETDATE())
+                {base_filter.replace('[Item code]', 'm.[Item code]')
+                            .replace('[Vertical]', 'm.[Vertical]')
+                            .replace('[Category]', 'm.[Category]')
+                            .replace('[Type]', 'm.[Type]')} 
+            """
+            cursor.execute(sql_monthly, params)
+            monthly_val = cursor.fetchone()[0] or 0
+            
+            inventory['Dispatch'] = monthly_val
+
         except Exception as e:
             print(f"API Error fetching filtered inventory: {e}")
+            traceback.print_exc()
         finally:
             if conn: conn.close()
     return jsonify(inventory)
 
 
-@app.route('/api/adherence/filtered', methods=['POST'])
-def api_adherence_filtered():
-    data = request.get_json()
-    item_codes = data.get('item_code', [])
-    verticals = data.get('vertical', [])
-    categories = data.get('category', [])
 
-    conn = get_db_connection()
-    result_data = {}
-    if conn:
-        try:
-            result_data = calculate_adherence(conn, item_codes=item_codes, verticals=verticals, categories=categories)
-        finally:
-            conn.close()
-    return jsonify(result_data)
-
-
-# In app/routes.py
-
-# --- ITEM MANAGEMENT ROUTES ---
-
-# In app/routes.py
 
 @app.route('/items', endpoint='manage_items')
+@login_required
 def manage_items():
     page = request.args.get('page', 1, type=int)
     per_page = 20
@@ -2958,6 +3231,7 @@ def add_item():
     return redirect(url_for('manage_items'))
 
 @app.route('/stages', endpoint='manage_stages')
+@login_required
 def manage_stages():
     conn = get_db_connection()
     if not conn:
@@ -3025,10 +3299,21 @@ def get_dynamic_stages(cursor, dashboard_only=False):
 def api_vertical_overview():
     conn = get_db_connection()
     if not conn: return jsonify([])
+    
+    # --- NEW: Get Filter ---
+    filter_type = request.args.get('type')
 
     try:
         cursor = conn.cursor()
-        sql_vertical = """
+        
+        # Build Clause
+        filter_clause = " AND p.[Vertical] IS NOT NULL"
+        params = []
+        if filter_type:
+            filter_clause += " AND m.[Type] = ?"
+            params.append(filter_type)
+
+        sql_vertical = f"""
             DECLARE @CurrentProductionDate DATE = CAST(DATEADD(hour, -2, GETDATE()) AS DATE);
             DECLARE @ProductionDayStart DATETIME = DATEADD(hour, 2, CAST(@CurrentProductionDate AS DATETIME));
             DECLARE @ProductionDayEnd DATETIME = DATEADD(day, 1, @ProductionDayStart);
@@ -3042,28 +3327,30 @@ def api_vertical_overview():
             VerticalDispatch AS (
                 SELECT m.[Vertical], SUM(pl.quantity) as QtyDispatched
                 FROM production_log pl JOIN master m ON pl.item_code = m.[Item code]
-                WHERE pl.to_stage = 'Dispatch' 
+                WHERE pl.from_stage = 'FG' AND pl.to_stage = 'Dispatch'
                 AND pl.moved_at >= @ProductionDayStart AND pl.moved_at < @ProductionDayEnd
                 GROUP BY m.[Vertical]
             )
             SELECT 
                 p.[Vertical], 
                 SUM(ISNULL(m.[Pending], 0)) as [Opening Trigger],
-                (SUM(ISNULL(m.[Pending], 0)) - ISNULL(vfg.QtyReachedFG, 0)) as [Pending],
+                CASE 
+                    WHEN (SUM(ISNULL(m.[Pending], 0)) - ISNULL(vd.QtyDispatched, 0)) < 0 THEN 0
+                    ELSE (SUM(ISNULL(m.[Pending], 0)) - ISNULL(vd.QtyDispatched, 0))
+                END as [Pending],
                 ISNULL(vd.QtyDispatched, 0) as [Dispatch],
                 ISNULL(vfg.QtyReachedFG, 0) as [Achieved]
             FROM Production_pl p 
             LEFT JOIN master m ON p.[Item code ] = m.[Item code]
             LEFT JOIN VerticalFG vfg ON p.[Vertical] = vfg.[Vertical]
             LEFT JOIN VerticalDispatch vd ON p.[Vertical] = vd.[Vertical]
-            WHERE p.[Vertical] IS NOT NULL 
+            WHERE 1=1 {filter_clause}
             GROUP BY p.[Vertical], vfg.QtyReachedFG, vd.QtyDispatched 
             ORDER BY p.[Vertical]
         """
-        cursor.execute(sql_vertical)
+        cursor.execute(sql_vertical, params)
         data = [row_to_dict(cursor, row) for row in cursor.fetchall()]
 
-        # Calculate Adherence % for frontend
         for item in data:
             trig = item.get('Opening Trigger', 0)
             ach = item.get('Achieved', 0)
@@ -3074,16 +3361,25 @@ def api_vertical_overview():
         conn.close()
 
 
-# --- MAKE SURE THIS IS ON A NEW LINE ---
-
 @app.route('/api/category_overview', endpoint='api_category_overview')
 def api_category_overview():
     conn = get_db_connection()
     if not conn: return jsonify([])
 
+    # --- NEW: Get Filter ---
+    filter_type = request.args.get('type')
+
     try:
         cursor = conn.cursor()
-        sql_category = """
+        
+        # Build Clause
+        filter_clause = " AND p.[Category] IS NOT NULL"
+        params = []
+        if filter_type:
+            filter_clause += " AND m.[Type] = ?"
+            params.append(filter_type)
+
+        sql_category = f"""
             DECLARE @CurrentProductionDate DATE = CAST(DATEADD(hour, -2, GETDATE()) AS DATE);
             DECLARE @ProductionDayStart DATETIME = DATEADD(hour, 2, CAST(@CurrentProductionDate AS DATETIME));
             DECLARE @ProductionDayEnd DATETIME = DATEADD(day, 1, @ProductionDayStart);
@@ -3097,25 +3393,28 @@ def api_category_overview():
             CategoryDispatch AS (
                 SELECT m.[Category], SUM(pl.quantity) as QtyDispatched
                 FROM production_log pl JOIN master m ON pl.item_code = m.[Item code]
-                WHERE pl.to_stage = 'Dispatch' 
+                WHERE pl.from_stage = 'FG' AND pl.to_stage = 'Dispatch'
                 AND pl.moved_at >= @ProductionDayStart AND pl.moved_at < @ProductionDayEnd
                 GROUP BY m.[Category]
             )
             SELECT 
                 p.[Category], 
                 SUM(ISNULL(m.[Pending], 0)) as [Opening Trigger],
-                (SUM(ISNULL(m.[Pending], 0)) - ISNULL(cfg.QtyReachedFG, 0)) as [Pending],
+                CASE 
+                    WHEN (SUM(ISNULL(m.[Pending], 0)) - ISNULL(cd.QtyDispatched, 0)) < 0 THEN 0
+                    ELSE (SUM(ISNULL(m.[Pending], 0)) - ISNULL(cd.QtyDispatched, 0))
+                END as [Pending],
                 ISNULL(cd.QtyDispatched, 0) as [Dispatch],
                 ISNULL(cfg.QtyReachedFG, 0) as [Achieved]
             FROM Production_pl p 
             LEFT JOIN master m ON p.[Item code ] = m.[Item code]
             LEFT JOIN CategoryFG cfg ON p.[Category] = cfg.[Category]
             LEFT JOIN CategoryDispatch cd ON p.[Category] = cd.[Category]
-            WHERE p.[Category] IS NOT NULL 
+            WHERE 1=1 {filter_clause}
             GROUP BY p.[Category], cfg.QtyReachedFG, cd.QtyDispatched
             ORDER BY p.[Category]
         """
-        cursor.execute(sql_category)
+        cursor.execute(sql_category, params)
         data = [row_to_dict(cursor, row) for row in cursor.fetchall()]
 
         for item in data:
@@ -3125,4 +3424,179 @@ def api_category_overview():
 
         return jsonify(data)
     finally:
-        conn.close()
+        conn.close()      
+       
+        
+    
+@app.before_request
+def make_session_permanent():
+    session.permanent = True # Enforce the 30-minute timeout defined in Config
+    session.modified = True  # Reset the timer on every request
+    
+# In app/routes.py
+
+import calendar
+
+@app.route('/upload_dispatch', methods=['POST'], endpoint='upload_dispatch')
+@login_required
+def upload_dispatch():
+    if 'file' not in request.files or request.files['file'].filename == '':
+        flash('No file selected.', 'error')
+        return redirect(request.referrer)
+
+    file = request.files['file']
+    if not file.filename.endswith(('.xlsx', '.xls')):
+        flash('Invalid file type. Please upload an Excel file.', 'error')
+        return redirect(request.referrer)
+
+    filepath = None
+    conn = get_db_connection()
+    if not conn:
+        flash('Database connection failed.', 'error')
+        return redirect(request.referrer)
+
+    try:
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
+
+        # 1. Read Excel (First Sheet) using 'with' to ensure file is CLOSED afterwards
+        target_month = None
+        target_year = None
+        df = None
+        sheet_name = ""
+
+        with pd.ExcelFile(filepath) as xls:
+            sheet_name = xls.sheet_names[0] # Use first sheet automatically
+            df = pd.read_excel(xls, sheet_name=sheet_name)
+
+        # 2. Parse Month/Year from Sheet Name (Expected format: "Dec- 25", "Jan 24", etc.)
+        import re
+        date_match = re.search(r"([A-Za-z]{3})[\s-]*(\d{2})", sheet_name)
+        
+        if date_match:
+            try:
+                month_str = date_match.group(1)
+                year_str = "20" + date_match.group(2) # Assume 20xx
+                target_date_obj = datetime.strptime(f"{month_str}-{year_str}", "%b-%Y")
+                target_month = target_date_obj.month
+                target_year = target_date_obj.year
+            except ValueError:
+                pass
+        
+        # Fallback: If sheet name parsing fails, try to guess from the first valid date column header
+        if not target_month:
+            for col in df.columns:
+                if isinstance(col, datetime):
+                    target_month = col.month
+                    target_year = col.year
+                    break
+        
+        if not target_month or not target_year:
+            flash(f"Could not detect Month/Year from sheet name '{sheet_name}'. Please rename sheet to format 'MMM- YY' (e.g., 'Dec- 25').", 'error')
+            return redirect(request.referrer)
+
+        print(f"DEBUG: Processing Dispatch for {target_month}/{target_year}")
+
+        # 3. Clean & Process Data
+        # Standardize columns
+        df.columns = [str(c).strip() if isinstance(c, str) else c for c in df.columns]
+        
+        # Deduplicate columns
+        new_columns = []
+        seen_columns = {}
+        for col in df.columns:
+            col_str = str(col)
+            if col_str in seen_columns:
+                seen_columns[col_str] += 1
+                new_columns.append(f"{col_str}.{seen_columns[col_str]}")
+            else:
+                seen_columns[col_str] = 0
+                new_columns.append(col)
+        df.columns = new_columns
+
+        # --- MODIFIED: Identify Item Code Column (Check for 'item code' OR 'spl') ---
+        possible_headers = ['item code', 'spl']
+        item_code_col = next((c for c in df.columns if str(c).lower().strip() in possible_headers), None)
+        
+        if not item_code_col:
+            flash("Column 'Item code' or 'SPL' not found in Excel.", 'error')
+            return redirect(request.referrer)
+
+        # Identify Date Columns (Dynamic based on found item code col)
+        info_cols = [str(item_code_col).lower(), 'description', 'vertical', 'model', 'category', 'type', 'total', 's.no']
+        date_columns = [c for c in df.columns if str(c).lower() not in info_cols and not str(c).startswith('Unnamed')]
+
+        log_records = []
+        for index, row in df.iterrows():
+            raw_code = row[item_code_col]
+            if pd.isna(raw_code): continue
+            item_code = str(raw_code).strip()
+
+            for col in date_columns:
+                raw_val = row[col]
+                # Validate Quantity
+                try:
+                    qty = int(raw_val)
+                    if qty <= 0: continue
+                except (ValueError, TypeError):
+                    continue
+
+                # Validate Date
+                moved_at = None
+                if isinstance(col, (datetime, pd.Timestamp)):
+                    moved_at = col
+                elif isinstance(col, str):
+                    try:
+                        clean_col = col.split('.')[0].strip() # Handle duplicates
+                        # Use the parsed year from sheet name
+                        date_str = f"{clean_col}-{target_year}" 
+                        moved_at = datetime.strptime(date_str, "%d-%b-%Y")
+                    except ValueError:
+                        continue
+                
+                if moved_at:
+                    # Filter: Only keep records belonging to the Target Month/Year found in sheet name
+                    if moved_at.month == target_month and moved_at.year == target_year:
+                        log_records.append((item_code, qty, 'FG', 'Dispatch', moved_at))
+
+        if not log_records:
+            flash("No valid dispatch records found for the detected month.", 'warning')
+            return redirect(request.referrer)
+
+        cursor = conn.cursor()
+
+        # 4. REPLACE DATA (Delete existing for this month, then Insert)
+        
+        delete_sql = """
+            DELETE FROM production_log 
+            WHERE to_stage = 'Dispatch' 
+            AND MONTH(moved_at) = ? 
+            AND YEAR(moved_at) = ?
+        """
+        cursor.execute(delete_sql, target_month, target_year)
+        deleted_count = cursor.rowcount
+
+        insert_sql = """
+            INSERT INTO production_log (item_code, quantity, from_stage, to_stage, moved_at) 
+            VALUES (?, ?, ?, ?, ?)
+        """
+        cursor.executemany(insert_sql, log_records)
+        
+        conn.commit()
+        flash(f"Successfully uploaded {len(log_records)} records for {calendar.month_name[target_month]} {target_year}. (Replaced {deleted_count} existing records)", 'success')
+
+    except Exception as e:
+        if conn: conn.rollback()
+        flash(f"Error processing file: {str(e)}", 'error')
+        traceback.print_exc()
+    finally:
+        if conn: conn.close()
+        # Ensure file is removed
+        if filepath and os.path.exists(filepath): 
+            try:
+                os.remove(filepath)
+            except PermissionError:
+                print(f"Warning: Could not remove {filepath} - File still locked.")
+
+    return redirect(request.referrer)

@@ -1,227 +1,226 @@
 {% extends "layout.html" %}
 
 {% block title %}Production Planning{% endblock %}
-
 {% block content %}
-    <style>
-        /* Only keep styles needed for the table and filters */
-        .filter-form { background-color: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px; display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-end; }
-
-        .sticky-filter-bar {
-            position: sticky;
-            top: 60px; /* Below Navbar */
-            z-index: 100;
-            background-color: #fff;
-            padding: 10px;
-            border-bottom: 1px solid #ddd;
-            display: flex;
-            gap: 15px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
-            margin-bottom: 10px;
-            flex-wrap: wrap;
-        }
-        .sticky-filter-bar input, .sticky-filter-bar select {
-            padding: 8px;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-            font-size: 14px;
-            min-width: 150px;
-        }
-
-        .empty-state {
-            text-align: center;
-            padding: 50px 20px;
-            background-color: #f9fafb;
-            border: 2px dashed #e5e7eb;
-            border-radius: 8px;
-            margin-bottom: 20px;
-        }
-        .empty-state h3 { color: #374151; margin-bottom: 10px; }
-        .empty-state p { color: #6b7280; margin-bottom: 20px; }
-    </style>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/productionpl.css') }}">
 
     {% set active_view = request.args.get('view', 'production') %}
     {% set has_plan = plans|length > 0 %}
 
-    <div class="header">
-        <h1 id="page-title">{% if active_view == 'overdue' %}Overdue Pending Triggers{% else %}Daily Production Plan{% endif %}</h1>
-        <div class="actions">
-            {# Generate Button (Always visible) #}
-            <form id="generate-plan-form" action="{{ url_for('generate_plan') }}" method="POST" style="display: {% if active_view == 'overdue' %}none{% else %}inline-block{% endif %};">
-                <button type="submit" class="button">Generate Plan</button>
-            </form>
+    <div class="page-container">
+        <div class="content-card">
+            
+            {# --- Unified Command Bar --- #}
+            <div class="filter-toolbar">
+                <div class="toolbar-section" style="display:flex; align-items:center; gap:20px;">
+                    <h1 class="toolbar-title">
+                        {% if request.args.get('view') == 'overdue' %}Overdue Triggers{% else %}Production Plan{% endif %}
+                    </h1>
 
-            {# Release Button (Only visible if plan exists and not in overdue view) #}
-            {% if has_plan %}
-            <form id="release-plan-form" action="{{ url_for('release_plan') }}" method="POST" onsubmit="return confirm('Are you sure you want to release this plan? This will update the Master Table.');" style="display: {% if active_view == 'overdue' %}none{% else %}inline-block{% endif %}; margin-left: 10px;">
-                <button type="submit" class="button" style="background-color: #166534;">Release Plan</button>
-            </form>
-            {% endif %}
+                    {# View Toggle #}
+                    <div class="view-toggle">
+                        <a href="{{ url_for('production_planning', view='production') }}" class="toggle-btn {% if request.args.get('view', 'production') == 'production' %}active{% endif %}">Plan</a>
+                        <a href="{{ url_for('production_planning', view='overdue') }}" class="toggle-btn {% if request.args.get('view') == 'overdue' %}active{% endif %}">Overdue</a>
+                    </div>
+                </div>
 
-            {% if active_view == 'overdue' %}
-                <a href="{{ url_for('production_planning', view='production') }}" class="button" style="margin-left: 10px; background-color: #6c757d;">Back to Production Plan</a>
-            {% else %}
-                <a href="{{ url_for('production_planning', view='overdue') }}" class="button button-danger" style="margin-left: 10px;">View Overdue Triggers</a>
-            {% endif %}
-        </div>
-    </div>
+                {# --- FILTERS FOR PRODUCTION PLAN --- #}
+                {% if request.args.get('view', 'production') == 'production' and plan_generated_today %}
+                <form action="{{ url_for('production_planning') }}" method="GET" class="toolbar-actions" style="display:flex; gap:10px; align-items:center;">
+                    <input type="hidden" name="view" value="production">
+                    
+                    {# Rows per Page #}
+                    <div class="rows-wrapper">
+                        <input type="number" name="per_page" value="{{ current_per_page }}" min="1" max="1000" onchange="this.form.submit()" class="rows-input">
+                        <span class="rows-label">Rows</span>
+                    </div>
 
-    {# --- Main Production Plan View --- #}
-    <div id="production-plan-view" {% if active_view != 'production' %}style="display: none;"{% endif %}>
+                    {# Server-Side Search + Client-Side Real-Time Filter #}
+                    <input type="text" id="filter-search" name="search" value="{{ filter_search }}" placeholder="Search Item..." class="filter-input" oninput="filterTable()" autocomplete="off">
 
-        {% if not has_plan %}
-            {# --- Empty State --- #}
-            <div class="empty-state">
-                <h3>No Production Plan Generated</h3>
-                <p>Click the "Generate Plan" button above to calculate the daily suggested release based on inventory and triggers.</p>
+                    {# Vertical Dropdown #}
+                    <select id="filter-vertical" name="vertical" onchange="this.form.submit()" class="filter-select">
+                        <option value="">Vertical: All</option>
+                        {% for v in all_verticals %}
+                            <option value="{{ v }}" {% if filter_vertical == v %}selected{% endif %}>{{ v }}</option>
+                        {% endfor %}
+                    </select>
+
+                    {# Category Dropdown #}
+                    <select id="filter-category" name="category" onchange="this.form.submit()" class="filter-select">
+                        <option value="">Category: All</option>
+                        {% for c in all_categories %}
+                            <option value="{{ c }}" {% if filter_category == c %}selected{% endif %}>{{ c }}</option>
+                        {% endfor %}
+                    </select>
+                    
+                    <button type="submit" style="display:none;">Search</button> {# Hidden submit for Enter key #}
+                    <a href="{{ url_for('production_planning', view='production') }}" class="button button-text" style="height:30px; padding: 0 10px; line-height:30px;">Reset</a>
+                </form>
+                
+                <div class="toolbar-actions">
+                    <form action="{{ url_for('generate_plan') }}" method="POST">
+                        <button type="submit" class="button button-primary">Generate</button>
+                    </form>
+                    <form action="{{ url_for('release_plan') }}" method="POST" onsubmit="return confirm('Release plan to Master?');">
+                        <button type="submit" class="button button-success">Release</button>
+                    </form>
+                </div>
+
+                {% elif request.args.get('view', 'production') == 'production' %}
+                    {# Empty State Actions #}
+                    <form action="{{ url_for('generate_plan') }}" method="POST">
+                        <button type="submit" class="button button-primary">Generate Plan</button>
+                    </form>
+
+                {% elif request.args.get('view') == 'overdue' %}
+                {# --- FILTERS FOR OVERDUE --- #}
+                <div class="toolbar-actions">
+                    <form method="GET" action="{{ url_for('production_planning') }}" style="display:flex; gap:8px;">
+                        <input type="hidden" name="view" value="overdue">
+                        <select name="trigger_type" class="filter-select">
+                            <option value="All">Type: All</option>
+                            {% for type in trigger_type_list %}
+                                <option value="{{ type }}" {% if type == selected_trigger_type %}selected{% endif %}>{{ type }}</option>
+                            {% endfor %}
+                        </select>
+                        <input type="text" name="item_code" placeholder="Item Code..." value="{{ selected_item_code }}" class="filter-input">
+                        <button type="submit" class="button button-secondary">Apply</button>
+                    </form>
+                </div>
+                {% endif %}
             </div>
-        {% else %}
 
-            {# --- Sticky Filter Bar --- #}
-            <div class="sticky-filter-bar">
-                <input type="text" id="filter-search" placeholder="Search Item Code or Desc..." onkeyup="filterTable()">
+            {# --- Table Content --- #}
+            <div class="table-wrapper">
+                
+                {# View: Production Plan #}
+                <div id="production-plan-view" {% if active_view != 'production' %}style="display: none;"{% endif %}>
+                    {% if not has_plan %}
+                        <div class="empty-state">
+                            <div class="empty-icon">📊</div>
+                            <h3>Ready to Plan</h3>
+                            <p>Generate a plan to see items here.</p>
+                        </div>
+                    {% else %}
+                    <form id="update-plan-form">
+                        <table id="production-plan-table" class="modern-table">
+                            <thead>
+                                <tr>
+                                    <th class="col-center" style="width: 40px;">#</th>
+                                    <th style="width: 110px;">Item Code</th>
+                                    <th>Description</th>
+                                    <th class="col-center">Vertical</th>
+                                    <th class="col-center">Cat</th>
+                                    <th class="col-center">RPL</th>
+                                    <th class="col-center">WIP</th>
+                                    <th class="col-center">Pending</th>
+                                    <th class="col-center bg-highlight">Suggested</th>
+                                    <th class="col-center" style="width: 80px;">Modified</th>
+                                </tr>
+                            </thead>
+                            <tbody id="plan-tbody">
+                                {% for plan in plans %}
+                                <tr class="plan-row group"
+                                    data-code="{{ plan['Item code']|lower }}"
+                                    data-desc="{{ plan['Description']|lower }}"
+                                    data-vertical="{{ plan['Vertical'] }}"
+                                    data-category="{{ plan['Category'] }}"
+                                    data-type="{{ plan['Type'] }}">
 
-                <select id="filter-vertical" onchange="filterTable()">
-                    <option value="">All Verticals</option>
-                    {% set verticals = [] %}
-                    {% for p in plans %}
-                        {% if p['Vertical'] not in verticals %}{% set _ = verticals.append(p['Vertical']) %}{% endif %}
-                    {% endfor %}
-                    {% for v in verticals|sort %}
-                        <option value="{{ v }}">{{ v }}</option>
-                    {% endfor %}
-                </select>
+                                    <td class="col-center" style="color: #94a3b8;">{{ loop.index + (pagination.page - 1) * pagination.per_page }}</td>
+                                    
+                                    <td class="col-code">{{ plan['Item code'] }}</td>
+                                    
+                                    <td class="col-desc" title="{{ plan['Description'] }}">
+                                        {{ plan['Description'] }}
+                                        <span style="display:block; font-size: 0.7rem; color: #94a3b8;">{{ plan['Type'] }}</span>
+                                    </td>
+                                    
+                                    <td class="col-center"><span class="badge badge-blue">{{ plan['Vertical'] }}</span></td>
+                                    <td class="col-center"><span class="badge badge-gray">{{ plan['Category'] }}</span></td>
+                                    <td class="col-center" style="font-family: monospace;">{{ plan['RPL days to Delivery']|int }}</td>
+                                    
+                                    <td class="col-center" style="color: #0369a1;font-weight:bold">
+                                        {{ plan['WIP']|int }}
+                                    </td>
 
-                <select id="filter-category" onchange="filterTable()">
-                    <option value="">All Categories</option>
-                    <option value="Milk Run">Milk Run</option>
-                    <option value="Runner">Runner</option>
-                    <option value="Repeater">Repeater</option>
-                    <option value="Stranger">Stranger</option>
-                </select>
+                                    <td class="col-center">
+                                        {% if plan['Pending'] > 0 %}
+                                            <span class="text-pending">{{ plan['Pending']|int }}</span>
+                                        {% else %}
+                                            <span class="text-good">-</span>
+                                        {% endif %}
+                                    </td>
 
-                <select id="filter-type" onchange="filterTable()">
-                    <option value="">All Types</option>
-                    <option value="Lean">Lean</option>
-                    <option value="Non Lean">Non Lean</option>
-                </select>
+                                    <td class="col-center bg-highlight">
+                                        {{ plan['Daily Suggested Release Plan'] }}
+                                    </td>
+                                    
+                                    <td class="col-center">
+                                        <input type="number" name="modified_plan_{{ plan['Item code'] }}" 
+                                            value="{{ plan['Modified Release plan'] }}" 
+                                            class="plan-input"
+                                            onfocus="this.select()">
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </form>
 
-                <button type="button" class="button button-secondary" onclick="clearFilters()" style="padding: 5px 10px; font-size: 0.8rem;">Clear Filters</button>
-            </div>
+                        <div id="no-results-msg" style="display:none; text-align:center; padding: 40px; color: #64748b;">No items match.</div>
+                        
+                        {# --- Pagination --- #}
+                        {% if pagination and pagination.total_pages > 1 %}
+                        <div class="pagination-container">
+                            <ul class="pagination">
+                                <li class="page-item {% if not pagination.has_prev %}disabled{% endif %}">
+                                    <a class="page-link" href="{{ url_for('production_planning', page=pagination.prev_num, view='production', per_page=pagination.per_page, search=filter_search, vertical=filter_vertical, category=filter_category) }}">&laquo; Prev</a>
+                                </li>
+                                <li class="page-item disabled">
+                                    <span class="page-link" style="border: none;">Page {{ pagination.page }} of {{ pagination.total_pages }}</span>
+                                </li>
+                                <li class="page-item {% if not pagination.has_next %}disabled{% endif %}">
+                                    <a class="page-link" href="{{ url_for('production_planning', page=pagination.next_num, view='production', per_page=pagination.per_page, search=filter_search, vertical=filter_vertical, category=filter_category) }}">Next &raquo;</a>
+                                </li>
+                            </ul>
+                        </div>
+                        {% endif %}
+                    {% endif %}
+                </div>
 
-            {# --- Plan Table --- #}
-            <form id="update-plan-form">
-                <div class="table-container" style="max-height: 70vh; overflow-y: auto;">
-                    <table id="production-plan-table">
-                        <thead style="position: sticky; top: 0; background: #f8f9fa; z-index: 10;">
+                {# View: Overdue #}
+                <div id="overdue-triggers-view" {% if active_view != 'overdue' %}style="display: none;"{% endif %}>
+                    <table class="modern-table">
+                        <thead>
                             <tr>
-                                <th>S.No.</th>
                                 <th>Item Code</th>
                                 <th>Description</th>
-                                <th>Vertical</th>
+                                <th>Qty</th>
+                                <th>Trigger Date</th>
+                                <th>Due Date</th>
                                 <th>Type</th>
-                                <th>Category</th>
-                                <th>RPL Days</th>
-                                <th>Suggested Plan</th>
-                                <th>Modified Plan</th>
                             </tr>
                         </thead>
-                        <tbody id="plan-tbody">
-                            {% for plan in plans %}
-                            <tr class="plan-row"
-                                data-code="{{ plan['Item code']|lower }}"
-                                data-desc="{{ plan['Description']|lower }}"
-                                data-vertical="{{ plan['Vertical'] }}"
-                                data-category="{{ plan['Category'] }}"
-                                data-type="{{ plan['Type'] }}">
-
-                                <td class="sno-cell">{{ loop.index }}</td>
-                                <td>{{ plan['Item code'] }}</td>
-                                <td>{{ plan['Description'] }}</td>
-                                <td>{{ plan['Vertical'] }}</td>
-                                <td>{{ plan['Type'] }}</td>
-                                <td>{{ plan['Category'] }}</td>
-                                <td>{{ plan['RPL days to Delivery']|int }}</td>
-                                <td>{{ plan['Daily Suggested Release Plan'] }}</td>
-                                <td>
-                                    <input type="number" name="modified_plan_{{ plan['Item code'] }}" value="{{ plan['Modified Release plan'] }}" class="plan-input" style="width: 100px;">
-                                </td>
+                        <tbody>
+                            {% for item in overdue_items %}
+                            <tr>
+                                <td class="col-code">{{ item['Item code'] }}</td>
+                                <td class="col-desc">{{ item['ITEM DESCRIPTION'] }}</td>
+                                <td class="text-pending">{{ item['Qty'] }}</td>
+                                <td>{{ item['TRIGGER DT'] }}</td>
+                                <td>{{ item['DUE DT'] }}</td>
+                                <td><span class="badge badge-warning">{{ item['TRIGGER TYPE'] }}</span></td>
                             </tr>
+                            {% else %}
+                            <tr><td colspan="6" style="text-align:center; padding:40px; color:#94a3b8;">No overdue items.</td></tr>
                             {% endfor %}
                         </tbody>
                     </table>
                 </div>
-            </form>
-            <div id="no-results-msg" style="display:none; text-align:center; padding: 20px; color: #666;">No items match your filters.</div>
 
-        {% endif %}
-
-        {# AHP Config Form REMOVED #}
-
-    </div>
-
-    {# --- Overdue Pending Triggers View --- #}
-    <div id="overdue-triggers-view" {% if active_view != 'overdue' %}style="display: none;"{% endif %}>
-        <form method="GET" action="{{ url_for('production_planning') }}" class="filter-form">
-            <input type="hidden" name="view" value="overdue">
-            <div>
-                <label for="trigger_type">Trigger Type</label>
-                <select name="trigger_type" id="trigger_type">
-                    <option value="All">All Types</option>
-                    {% for type in trigger_type_list %}
-                        <option value="{{ type }}" {% if type == selected_trigger_type %}selected{% endif %}>{{ type }}</option>
-                    {% endfor %}
-                </select>
             </div>
-            <div>
-                <label for="item_code">Item Code</label>
-                <input list="item-codes-list" type="text" name="item_code" id="item_code" placeholder="Search or select..." value="{{ selected_item_code }}" autocomplete="off">
-                <datalist id="item-codes-list">
-                    {% for code in item_code_list %}
-                        <option value="{{ code }}">
-                    {% endfor %}
-                </datalist>
-            </div>
-            <div>
-                <button type="submit" class="button">Filter</button>
-            </div>
-        </form>
-
-        <div class="table-container">
-            <table id="overdue-triggers-table">
-                <thead>
-                    <tr>
-                        <th>COMPANY</th>
-                        <th>ITEM CODE</th>
-                        <th>ITEM DESCRIPTION</th>
-                        <th>QTY</th>
-                        <th>HSN</th>
-                        <th>TRIGGER DT</th>
-                        <th>DUE DT</th>
-                        <th>LOT NO</th>
-                        <th>PO NO</th>
-                        <th>TRIGGER TYPE</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for item in overdue_items %}
-                    <tr>
-                        <td>{{ item['COMPANY'] }}</td>
-                        <td>{{ item['Item code'] }}</td>
-                        <td>{{ item['ITEM DESCRIPTION'] }}</td>
-                        <td>{{ item['Qty'] }}</td>
-                        <td>{{ item['HSN'] }}</td>
-                        <td>{% if item['TRIGGER DT'] %}{{ item['TRIGGER DT'] }}{% endif %}</td>
-                        <td>{% if item['DUE DT'] %}{{ item['DUE DT'] }}{% endif %}</td>
-                        <td>{{ item['LOT NO'] }}</td>
-                        <td>{{ item['PO NO'] }}</td>
-                        <td>{{ item['TRIGGER TYPE'] }}</td>
-                    </tr>
-                    {% else %}
-                    <tr><td colspan="10" class="placeholder">No overdue pending triggers found.</td></tr>
-                    {% endfor %}
-                </tbody>
-            </table>
         </div>
     </div>
 {% endblock %}
@@ -229,90 +228,9 @@
 {% block scripts %}
 {{ super() }}
 <script>
-// --- Client-Side Filtering Logic ---
-function filterTable() {
-    const search = document.getElementById('filter-search').value.toLowerCase();
-    const vertical = document.getElementById('filter-vertical').value;
-    const category = document.getElementById('filter-category').value;
-    const type = document.getElementById('filter-type').value;
-
-    const rows = document.querySelectorAll('.plan-row');
-    let visibleCount = 0;
-
-    rows.forEach(row => {
-        const rCode = row.dataset.code;
-        const rDesc = row.dataset.desc;
-        const rVert = row.dataset.vertical;
-        const rCat = row.dataset.category;
-        const rType = row.dataset.type;
-
-        const matchSearch = (rCode.includes(search) || rDesc.includes(search));
-        const matchVert = (!vertical || rVert === vertical);
-        const matchCat = (!category || rCat === category);
-        const matchType = (!type || rType === type);
-
-        if (matchSearch && matchVert && matchCat && matchType) {
-            row.style.display = '';
-            visibleCount++;
-            // Update S.No for filtered view
-            row.querySelector('.sno-cell').textContent = visibleCount;
-        } else {
-            row.style.display = 'none';
-        }
-    });
-
-    // Show/Hide "No Results" message
-    const noResults = document.getElementById('no-results-msg');
-    if (visibleCount === 0) {
-        noResults.style.display = 'block';
-    } else {
-        noResults.style.display = 'none';
-    }
-}
-
-function clearFilters() {
-    document.getElementById('filter-search').value = '';
-    document.getElementById('filter-vertical').value = '';
-    document.getElementById('filter-category').value = '';
-    document.getElementById('filter-type').value = '';
-    filterTable(); // Re-run to show all
-}
-
-document.addEventListener('DOMContentLoaded', function() {
-    // Plan update listener (existing)
-    const planInputs = document.querySelectorAll('.plan-input');
-
-    planInputs.forEach(input => {
-        input.addEventListener('change', function(e) {
-            const itemCode = this.name.replace('modified_plan_', '');
-            const newPlanValue = this.value;
-
-            this.style.borderColor = '#fdba74';
-
-            const postData = { item_code: itemCode, new_plan_value: newPlanValue };
-
-            fetch("{{ url_for('update_single_plan') }}", {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(postData)
-            })
-            .then(response => response.json().then(data => ({ ok: response.ok, data })))
-            .then(({ ok, data }) => {
-                if (ok && data.status === 'success') {
-                    // Just flash green, don't reload as it disrupts the filter view
-                    this.style.borderColor = '#4ade80'; // Green
-                    setTimeout(() => this.style.borderColor = '', 1000);
-                } else {
-                    this.style.borderColor = '#f87171'; // Red
-                    alert('Error saving changes: ' + (data.message || 'Unknown error'));
-                }
-            })
-            .catch(error => {
-                this.style.borderColor = '#f87171';
-                alert('Network error.');
-            });
-        });
-    });
-});
+    window.productionConfig = {
+        urls: { updateSinglePlan: "{{ url_for('update_single_plan') }}" }
+    };
 </script>
+<script src="{{ url_for('static', filename='js/productionpl.js') }}"></script>
 {% endblock %}

@@ -3,185 +3,8 @@
 {% block title %}Dashboard{% endblock %}
 
 {% block content %}
-<style>
-    /* --- Layout & Grid --- */
-    .dashboard-section { margin-top: -20px; margin-bottom: 10px; }
-
-    .stage-cards-container {
-        display: grid;
-        grid-template-columns: repeat(13, minmax(0, 1fr));
-        gap: 5px;
-        margin-top: 10px;
-    }
-
-    .stage-card {
-        background-color: #fff;
-        border: 1px solid #000;
-        border-radius: 6px;
-        padding: 8px 4px;
-        display: flex;
-        flex-direction: column;
-        justify-content: space-around;
-        align-items: center;
-        text-align: center;
-        min-height: 55px;
-    }
-    .stage-card:first-child {
-        grid-column: span 1;
-        background-color: #e5e7eb;
-        border: 1px solid #374151;
-    }
-
-    .stage-card .count {
-        font-size: 1.5rem;
-        font-weight: 600;
-        line-height: 1;
-        display: block;
-        width: 100%;
-    }
-    .stage-card .stage-name {
-        font-size: 0.65rem;
-        text-align: center;
-        white-space: normal;
-        word-break: break-word;
-        line-height: 1.1;
-    }
-
-    /* --- Tables --- */
-    .dashboard-tables-container, .details-view-wrapper {
-        display: flex;
-        align-items: flex-start;
-        gap: 10px;
-        justify-content: center;
-    }
-    .dashboard-tables-container .table-wrapper, .details-view-wrapper .table-container {
-        flex-shrink: 0;
-    }
-
-    /* Main Plan Table Font Size */
-    .dashboard-tables-container table, .details-view-wrapper table {
-        font-size: 0.75rem;
-        width: auto;
-        border-collapse: collapse;
-    }
-
-    /* Overview Tables (Vertical/Category) Font Size & Width */
-    .dashboard-tables-container .table-wrapper:last-child table {
-        font-size: 0.8rem;
-        width: 100%;
-    }
-    .dashboard-tables-container .table-wrapper:last-child {
-        flex-shrink: 1;
-        min-width: 0;
-    }
-
-    .dashboard-tables-container th, .dashboard-tables-container td,
-    .details-view-wrapper th, .details-view-wrapper td {
-        padding: 0px 3px;
-        font-size: 0.84rem;
-        text-align: center;
-        white-space: nowrap;
-        border: 1px solid #000;
-        line-height: 0.98;
-    }
-
-    /* Overview Table Padding Overrides */
-    .dashboard-tables-container .table-wrapper:last-child th {
-        padding: 8px 10px;
-        white-space: normal;
-        vertical-align: middle;
-    }
-    .dashboard-tables-container .table-wrapper:last-child td {
-        padding: 7px 10px;
-        white-space: normal;
-        vertical-align: middle;
-    }
-    /* Fixed widths for Overview number columns */
-    .dashboard-tables-container .table-wrapper:last-child th:nth-child(2),
-    .dashboard-tables-container .table-wrapper:last-child th:nth-child(3),
-    .dashboard-tables-container .table-wrapper:last-child th:nth-child(4) {
-        max-width: 65px;
-    }
-
-    .dashboard-tables-container td.align-left, .details-view-wrapper td.align-left { text-align: left; }
-    .description-col { max-width: 180px; white-space: normal; }
-    .total-row td { font-weight: bold; border-top: 2px solid #000; background-color: #f8f9fa; }
-    .table-title { font-size: 0.9rem; font-weight: 600; padding: 4px; background-color: #e9ecef; }
-
-    /* --- Interaction --- */
-    .clickable-row { cursor: pointer; }
-    .clickable-row:hover { background-color: #e9ecef; }
-    .selected-row { background-color: #dbeafe !important; font-weight: bold; }
-
-    .draggable-item { cursor: grab; }
-    .draggable-item:active { cursor: grabbing; }
-    .draggable-item.dragging { opacity: 0.5; background-color: #f0f0f0; }
-    .drop-target.drag-over { background-color: #d1e7dd !important; border: 2px dashed #0f5132; }
-
-    /* --- Failure Reason Toggle Logic --- */
-
-    /* 1. Header Button Style */
-    #failure-header-toggle {
-        cursor: pointer;
-        user-select: none;
-        background-color: #fee2e2; /* Light Red */
-        color: #991b1b;
-        transition: background-color 0.2s;
-    }
-    #failure-header-toggle:hover {
-        background-color: #fecaca;
-    }
-    #failure-header-toggle.active {
-        background-color: #ef4444;
-        color: white;
-    }
-
-    /* 2. Cell & Button Style */
-    .reason-cell {
-        min-width: auto;
-        width: 80px;
-        padding: 2px !important;
-        vertical-align: middle;
-    }
-    .reason-btn {
-        padding: 3px 8px;
-        font-size: 0.75em;
-        width: 100%;
-        background-color: #ffc107;
-        color: #333;
-        border: 1px solid #d39e00;
-        display: none; /* HIDDEN BY DEFAULT */
-    }
-    .reason-btn.has-reason {
-        background-color: #fffbeb;
-        border-color: #fcd34d;
-        color: #78350f;
-    }
-    .reason-btn:hover { background-color: #e0a800; }
-
-    /* 3. SHOW ONLY WHEN CLASS IS PRESENT */
-    #plan-table-body.show-failures .reason-btn {
-        display: inline-block;
-    }
-
-    /* --- Modal --- */
-    #failure-reason-modal label { display: block; margin-bottom: 5px; font-weight: 500; }
-    #failure-reason-modal select { width: 100%; padding: 8px; }
-    #failure-reason-modal .modal-info { margin-bottom: 15px; font-size: 0.9em; color: var(--text-secondary); }
-    #failure-reason-modal .modal-info strong { color: var(--text-primary); }
-
-    /* --- Fullscreen Icon --- */
-    #fullscreen-toggle {
-        position: fixed; top: 75px; right: 30px; cursor: pointer; color: #888; z-index: 1050;
-    }
-    #fullscreen-toggle:hover { color: #000; }
-
-    .details-view-wrapper > div { width: fit-content; margin: 0 auto; }
-    .details-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 15px; padding-right: 30px; }
-    .details-header h2 { margin: 0; }
-</style>
-
-{% if current_view == 'details' %}
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+    {% if current_view == 'details' %}
     <div id="fullscreen-toggle" title="Toggle Fullscreen">
         <svg id="fullscreen-enter-icon" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
         <svg id="fullscreen-exit-icon" style="display:none;" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>
@@ -236,6 +59,7 @@
                 <div class="count">{{ total_monthly_dispatch|int }}</div>
                 <div class="stage-name">Monthly Dispatch</div>
             </div>
+            
             {# --- Daily Adherence Card --- #}
             {% set daily_percent = daily_adherence|float %}
             {% if daily_percent > 100 %}{% set daily_percent = 100 %}{% endif %}
@@ -249,20 +73,18 @@
                 <div class="count">{{ daily_adherence|round(1) }}%</div>
                 <div class="stage-name">Daily Adherence</div>
             </div>
+            {% set m_percent = monthly_trigger_adherence|float %}
+            {% if m_percent > 100 %}{% set m_percent = 100 %}{% endif %}
+            {% if m_percent < 0 %}{% set m_percent = 0 %}{% endif %}
 
-            {# --- Monthly Adherence Card --- #}
-            {% set monthly_percent = monthly_adherence|float %}
-            {% if monthly_percent > 100 %}{% set monthly_percent = 100 %}{% endif %}
-            {% if monthly_percent < 0 %}{% set monthly_percent = 0 %}{% endif %}
-            {% set monthly_hue = (monthly_percent * 1.2)|int %}
-            {% set monthly_saturation = '80%' %}
-            {% set monthly_lightness = '85%' %}
-            {% set monthly_card_style = 'background-color: hsl(%d, %s, %s); color: #333;'|format(monthly_hue, monthly_saturation, monthly_lightness) %}
-
-            <div class="stage-card" data-metric="monthly-adherence" style="{{ monthly_card_style }}">
-                <div class="count">{{ monthly_adherence|round(1) }}%</div>
-                <div class="stage-name">Monthly Adherence</div>
+            {# Calculate Color: 0% = Red(0), 100% = Green(120) #}
+            {% set m_hue = (m_percent * 1.2)|int %}
+            {% set m_style = 'background-color: hsl(%d, 80%%, 85%%); color: #333;'|format(m_hue) %}
+            <div class="stage-card" data-metric="monthly-trigger-adherence" style="background-color: #f3e8ff; color: #333;">
+                <div class="count">{{ monthly_trigger_adherence|round(1) }}%</div>
+                <div class="stage-name">Monthly Trigger Adherence</div>
             </div>
+            
         </div>
     </div>
 
@@ -271,13 +93,13 @@
             <div class="table-container">
                 <table>
                     <thead>
-                        <tr><th colspan="10" class="table-title">Daily Production Plan</th></tr>
+                        <tr><th colspan="11" class="table-title">Daily Production Plan</th></tr>
                         <tr>
                             <th>S.No.</th>
                             <th>Item code</th>
                             <th class="description-col">Description</th>
-                            <th>Opening Trigger</th>
-                            <th>Pending</th>
+                            <th>Opening Due Trigger</th>
+                            <th style="background-color: #f1f5f9; color: #64748b;">Next Pending</th> <th>Pending</th>
 
                             <th>Dispatch</th>
                             <th>FG</th>
@@ -305,8 +127,7 @@
                             <td class="align-left description-col">{{ plan['Description'] }}</td>
 
                             <td style="{{ cell_style }}">{{ plan['Opening Trigger']|int }}</td>
-
-                            <td style="font-weight: bold; color: #d95319;">{{ plan['Pending']|int }}</td>
+                            <td style="color: #64748b;">{{ plan['Next Pending']|int }}</td> <td style="font-weight: bold; color: #d95319;">{{ plan['Pending']|int }}</td>
 
                             <td>{{ plan['Dispatch']|int }}</td>
                             <td>{{ plan['FG']|int }}</td>
@@ -321,15 +142,16 @@
                                             data-failed-qty="{{ failure_qty }}"
                                             data-saved-reason="{{ plan.SavedReason or '' }}"
                                             title="{{ plan.SavedReason or 'Log Reason' }}">
-                                        {{ failure_qty }} Fail
+                                            {{ failure_qty }} Fail
                                     </button>
                                 {% endif %}
                             </td>
                         </tr>
                         {% else %}
-                        <tr><td colspan="10" class="placeholder">No plan data available.</td></tr>
+                        <tr><td colspan="11" class="placeholder">No plan data available.</td></tr>
                         {% endfor %}
                     </tbody>
+
                 </table>
             </div>
 
@@ -466,449 +288,22 @@
 
 {% block scripts %}
 {{ super() }}
-
 <script>
-document.addEventListener('DOMContentLoaded', function() {
-
-    // --- GLOBAL VARIABLES ---
-    let currentPage = 1;
-    const stages = {{ stages|tojson }};
-
-    // Track selections for filtering
-    let currentSelections = {
-        item_code: new Set(),
-        vertical: new Set(),
-        category: new Set()
+    window.dashboardConfig = {
+        stages: {{ stages|tojson }},
+        urls: {
+            adherenceFiltered: "{{ url_for('api_adherence_filtered') }}",
+            inventoryFiltered: "{{ url_for('api_inventory_filtered') }}",
+            stageTotals: "{{ url_for('api_stage_totals') }}",
+            adherenceTotals: "{{ url_for('api_adherence_totals') }}",
+            planPage: "{{ url_for('api_plan_page') }}",
+            verticalOverview: "{{ url_for('api_vertical_overview') }}",
+            categoryOverview: "{{ url_for('api_category_overview') }}",
+            logFailureReason: "{{ url_for('log_failure_reason') }}",
+            dispatchItem: "{{ url_for('dispatch_item') }}",
+            moveItem: "{{ url_for('move_item') }}"
+        }
     };
-
-    // DOM Elements
-    const failureHeader = document.getElementById('failure-header-toggle');
-    const planTableBody = document.getElementById('plan-table-body');
-    const verticalTableBody = document.getElementById('vertical-table-body');
-    const categoryTableBody = document.getElementById('category-table-body');
-
-    // ---------------------------------------------------------
-    // 1. DATA FETCHING (Real-Time Polling + Filtering)
-    // ---------------------------------------------------------
-    function refreshDashboardData() {
-        if (!planTableBody) return;
-
-        // Prepare Filter Payload
-        const payload = {
-            item_code: Array.from(currentSelections.item_code),
-            vertical: Array.from(currentSelections.vertical),
-            category: Array.from(currentSelections.category)
-        };
-
-        const hasFilters = payload.item_code.length > 0 || payload.vertical.length > 0 || payload.category.length > 0;
-
-        // A. Update Top Cards (WIP & Adherence)
-        // Switch between Standard API and Filtered API based on selection
-        if (hasFilters) {
-            // FILTERED FETCH (POST)
-            fetch("{{ url_for('api_inventory_filtered') }}", {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            })
-            .then(r => r.json())
-            .then(updateCards)
-            .catch(console.error);
-
-            fetch("{{ url_for('api_adherence_filtered') }}", {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            })
-            .then(r => r.json())
-            .then(updateAdherenceCards)
-            .catch(console.error);
-
-        } else {
-            // STANDARD FETCH (GET)
-            fetch("{{ url_for('api_stage_totals') }}")
-                .then(r => r.json())
-                .then(updateCards)
-                .catch(console.error);
-
-            fetch("{{ url_for('api_adherence_totals') }}")
-                .then(r => r.json())
-                .then(updateAdherenceCards)
-                .catch(console.error);
-        }
-
-        // B. Update Tables (These always show full lists, just highlighted)
-        fetch(`{{ url_for('api_plan_page') }}?page=${currentPage}`)
-            .then(r => r.json())
-            .then(data => {
-                if (data.status === 'success') {
-                    updatePlanTable(data.plans, data.per_page, data.current_page, data.show_failure_button);
-                    updatePlanPagination(data.total_pages, data.current_page);
-                    attachDragEvents();
-                    restoreSelectionHighlights(); // Keep rows green
-                }
-            })
-            .catch(console.error);
-
-        fetch("{{ url_for('api_vertical_overview') }}")
-            .then(r => r.json())
-            .then(data => {
-                updateOverviewTable(verticalTableBody, data, 'Vertical', 'vertical');
-                restoreSelectionHighlights();
-            })
-            .catch(console.error);
-
-        fetch("{{ url_for('api_category_overview') }}")
-            .then(r => r.json())
-            .then(data => {
-                updateOverviewTable(categoryTableBody, data, 'Category', 'category');
-                restoreSelectionHighlights();
-            })
-            .catch(console.error);
-    }
-
-    // ---------------------------------------------------------
-    // 2. INTERACTION LOGIC (Clicking Rows)
-    // ---------------------------------------------------------
-
-    function handleRowClick(event) {
-        // Ignore clicks on buttons/links
-        if (event.target.closest('a.button, button.reason-btn')) return;
-
-        const row = event.target.closest('tr.clickable-row');
-        if (!row) return;
-
-        const filterType = row.dataset.filterType;
-        const filterValue = row.dataset.filterValue;
-        const isCtrlClick = event.ctrlKey || event.metaKey;
-
-        // Auto-clear other types (e.g., if clicking Vertical, clear Category selections)
-        // This prevents confusing cross-filtering scenarios
-        let switchingTypes = false;
-        if (filterType === 'item_code' && (currentSelections.vertical.size > 0 || currentSelections.category.size > 0)) switchingTypes = true;
-        if (filterType === 'vertical' && (currentSelections.item_code.size > 0 || currentSelections.category.size > 0)) switchingTypes = true;
-        if (filterType === 'category' && (currentSelections.item_code.size > 0 || currentSelections.vertical.size > 0)) switchingTypes = true;
-
-        if (switchingTypes) {
-            currentSelections.item_code.clear();
-            currentSelections.vertical.clear();
-            currentSelections.category.clear();
-        }
-
-        // Toggle Selection
-        if (isCtrlClick) {
-            // Multi-select logic
-            if (currentSelections[filterType].has(filterValue)) {
-                currentSelections[filterType].delete(filterValue);
-            } else {
-                currentSelections[filterType].add(filterValue);
-            }
-        } else {
-            // Single-select logic
-            const alreadySelected = currentSelections[filterType].has(filterValue) && currentSelections[filterType].size === 1;
-            currentSelections[filterType].clear();
-            if (!alreadySelected) {
-                currentSelections[filterType].add(filterValue);
-            }
-        }
-
-        // Update UI immediately
-        restoreSelectionHighlights();
-        refreshDashboardData(); // Trigger data update for cards
-    }
-
-    // Helper: Re-applies the 'selected-row' class after table refresh
-    function restoreSelectionHighlights() {
-        document.querySelectorAll('tr.clickable-row').forEach(row => {
-            const fType = row.dataset.filterType;
-            const fVal = row.dataset.filterValue;
-            if (currentSelections[fType] && currentSelections[fType].has(fVal)) {
-                row.classList.add('selected-row');
-            } else {
-                row.classList.remove('selected-row');
-            }
-        });
-    }
-
-    // Attach Listeners
-    if (planTableBody) planTableBody.addEventListener('click', handleRowClick);
-    if (verticalTableBody) verticalTableBody.addEventListener('click', handleRowClick);
-    if (categoryTableBody) categoryTableBody.addEventListener('click', handleRowClick);
-
-
-    // ---------------------------------------------------------
-    // 3. UPDATE FUNCTIONS (Render HTML)
-    // ---------------------------------------------------------
-
-    function updateCards(data) {
-        let grandTotal = 0;
-        stages.forEach(stage => {
-            const count = parseInt(data[stage]) || 0;
-            if (stage !== 'FG') grandTotal += count;
-            const card = document.querySelector(`.stage-card[data-stage="${stage}"]`);
-            if (card) card.querySelector('.count').textContent = count;
-        });
-        const totalCard = document.querySelector('.stage-card[data-stage="Total-Inv"] .count');
-        if (totalCard) totalCard.textContent = grandTotal;
-        const dispatchCard = document.querySelector('.stage-card.monthly-dispatch-card .count');
-        if (dispatchCard && data['Dispatch'] !== undefined) dispatchCard.textContent = parseInt(data['Dispatch']);
-    }
-
-    function updateAdherenceCards(data) {
-        updateSingleAdherenceCard('daily-adherence', data.daily_adherence);
-        updateSingleAdherenceCard('monthly-adherence', data.monthly_adherence);
-    }
-
-    function updateSingleAdherenceCard(metric, value) {
-        const card = document.querySelector(`.stage-card[data-metric="${metric}"]`);
-        if (!card) return;
-        let percent = parseFloat(value) || 0;
-        percent = Math.max(0, Math.min(100, percent));
-        const hue = Math.round(percent * 1.2);
-        card.querySelector('.count').textContent = `${percent.toFixed(1)}%`;
-        card.style.backgroundColor = `hsl(${hue}, 80%, 85%)`;
-    }
-
-    function updatePlanTable(plans, perPage, curPage, showFailureButton) {
-         let html = '';
-         if (!plans || plans.length === 0) {
-             html = '<tr><td colspan="10" class="placeholder">No plan data available.</td></tr>';
-         } else {
-             plans.forEach((plan, index) => {
-                 const serialNumber = (parseInt(curPage) - 1) * parseInt(perPage) + (index + 1);
-                 let percent = parseFloat(plan['ItemAdherencePercent']) || 0;
-                 percent = Math.max(0, Math.min(100, percent));
-                 const hue = Math.round(percent * 1.2);
-                 const openingTriggerStyle = `background-color: hsl(${hue}, 80%, 85%); color: #333;`;
-                 const pendingStyle = `font-weight: bold; color: #d95319;`;
-
-                 let reasonHtml = '';
-                 const failureQty = parseInt(plan['FailureInTrigger']);
-                 if (failureQty > 0 && showFailureButton) {
-                     const reason = plan['SavedReason'] || '';
-                     const escapedReason = reason.replace(/"/g, '&quot;');
-                     const hasReasonClass = reason ? ' has-reason' : '';
-                     reasonHtml = `<button class="button reason-btn${hasReasonClass}"
-                                     data-item-code="${plan['Item code ']}"
-                                     data-failed-qty="${failureQty}"
-                                     data-saved-reason="${escapedReason}"
-                                     title="${reason || 'Log Reason'}">
-                                     ${failureQty} Fail
-                                   </button>`;
-                 }
-
-                 html += `
-                 <tr class="clickable-row draggable-item" draggable="true"
-                     data-item-code="${plan['Item code ']}"
-                     data-filter-type="item_code" data-filter-value="${plan['Item code ']}">
-                    <td>${serialNumber}</td>
-                    <td class="align-left">${plan['Item code ']}</td>
-                    <td class="align-left description-col">${plan['Description']}</td>
-                    <td style="${openingTriggerStyle}">${parseInt(plan['Opening Trigger'])}</td>
-                    <td style="${pendingStyle}">${parseInt(plan['Pending'])}</td>
-                    <td>${parseInt(plan['Dispatch'])}</td>
-                    <td>${parseInt(plan['FG'])}</td>
-                    <td>${parseInt(plan['Powder coating'])}</td>
-                    <td>${parseInt(plan['Hydro Testing'])}</td>
-                    <td class="reason-cell">${reasonHtml}</td>
-                 </tr>`;
-             });
-         }
-         planTableBody.innerHTML = html;
-         if (failureHeader && failureHeader.classList.contains('active')) {
-             planTableBody.classList.add('show-failures');
-         } else {
-             planTableBody.classList.remove('show-failures');
-         }
-    }
-
-    function updateOverviewTable(tbody, data, keyName, filterType) {
-        if (!tbody) return;
-        let html = '';
-        let totalOpen = 0, totalPend = 0, totalDisp = 0;
-
-        if (!data || data.length === 0) {
-            html = '<tr><td colspan="5" class="placeholder">No data available.</td></tr>';
-        } else {
-            data.forEach(item => {
-                totalOpen += parseInt(item['Opening Trigger']);
-                totalPend += parseInt(item['Pending']);
-                totalDisp += parseInt(item['Dispatch']);
-                let percent = parseFloat(item['AdherencePercent']) || 0;
-                percent = Math.max(0, Math.min(100, percent));
-                const hue = Math.round(percent * 1.2);
-                const style = `background-color: hsl(${hue}, 80%, 85%); color: #333;`;
-
-                html += `
-                <tr class="clickable-row" data-filter-type="${filterType}" data-filter-value="${item[keyName]}">
-                    <td class="align-left">${item[keyName]}</td>
-                    <td style="${style}">${parseInt(item['Opening Trigger'])}</td>
-                    <td style="font-weight: bold;">${parseInt(item['Pending'])}</td>
-                    <td>${parseInt(item['Dispatch'])}</td>
-                    <td><a href="/dashboard?view=details&type=${filterType}&value=${encodeURIComponent(item[keyName])}" class="button" style="padding: 1px 5px; font-size: 0.7rem;">Details</a></td>
-                </tr>`;
-            });
-        }
-        tbody.innerHTML = html;
-        const tfoot = tbody.nextElementSibling;
-        if (tfoot) {
-            const cells = tfoot.querySelectorAll('td');
-            if(cells.length >= 4) {
-                cells[1].textContent = totalOpen;
-                cells[2].textContent = totalPend;
-                cells[3].textContent = totalDisp;
-            }
-        }
-    }
-
-    function updatePlanPagination(totalPages, curPage) {
-        const paginationContainer = document.getElementById('plan-pagination');
-        if(!paginationContainer) return;
-        let html = '<nav aria-label="Page navigation"><ul class="pagination">';
-        const prevDisabled = (curPage === 1) ? 'disabled' : '';
-        html += `<li class="page-item ${prevDisabled}"><a class="page-link" href="#" data-page="${curPage - 1}">&laquo;</a></li>`;
-        for (let i = 1; i <= totalPages; i++) {
-            const active = (i === curPage) ? 'active' : '';
-            html += `<li class="page-item ${active}"><a class="page-link" href="#" data-page="${i}">${i}</a></li>`;
-        }
-        const nextDisabled = (curPage === totalPages) ? 'disabled' : '';
-        html += `<li class="page-item ${nextDisabled}"><a class="page-link" href="#" data-page="${curPage + 1}">&raquo;</a></li>`;
-        html += `</ul></nav>`;
-        paginationContainer.innerHTML = html;
-    }
-
-    // ---------------------------------------------------------
-    // 4. EVENT LISTENERS & SETUP
-    // ---------------------------------------------------------
-
-    // Pagination
-    const planPagination = document.getElementById('plan-pagination');
-    if (planPagination) {
-        planPagination.addEventListener('click', function(e) {
-            e.preventDefault();
-            const link = e.target.closest('.page-link');
-            if (!link || link.parentElement.classList.contains('disabled')) return;
-            currentPage = parseInt(link.dataset.page);
-            refreshDashboardData();
-        });
-    }
-
-    // Failure Toggle
-    if (failureHeader && planTableBody) {
-        failureHeader.addEventListener('click', function() {
-            planTableBody.classList.toggle('show-failures');
-            this.classList.toggle('active');
-            this.innerHTML = this.classList.contains('active') ? 'Failure ▴' : 'Failure ▾';
-        });
-    }
-
-    // Failure Modal
-    const reasonModal = document.getElementById('failure-reason-modal');
-    const reasonForm = document.getElementById('failure-reason-form');
-    const reasonSelect = document.getElementById('reason-modal-select');
-    const reasonModalItemCodeHidden = document.getElementById('reason-modal-item-code-hidden');
-    const reasonModalFailedQtyHidden = document.getElementById('reason-modal-failed-qty-hidden');
-    const reasonModalCloseBtn = reasonModal.querySelector('.close-button');
-    const reasonModalClearBtn = document.getElementById('reason-modal-clear-btn');
-
-    planTableBody.addEventListener('click', function(event) {
-        const button = event.target.closest('button.reason-btn');
-        if (button) {
-            document.getElementById('reason-modal-item-code').textContent = button.dataset.itemCode;
-            document.getElementById('reason-modal-failed-qty').textContent = button.dataset.failedQty;
-            reasonModalItemCodeHidden.value = button.dataset.itemCode;
-            reasonModalFailedQtyHidden.value = button.dataset.failedQty;
-            reasonSelect.value = button.dataset.savedReason.replace(/&quot;/g, '"');
-            reasonModal.style.display = 'block';
-        }
-    });
-
-    reasonForm.addEventListener('submit', function(event) { event.preventDefault(); saveReason(reasonSelect.value); });
-    reasonModalClearBtn.addEventListener('click', function() { saveReason(""); });
-
-    function saveReason(reasonValue) {
-        const postData = {
-            item_code: reasonModalItemCodeHidden.value,
-            failed_quantity: parseInt(reasonModalFailedQtyHidden.value),
-            reason: reasonValue
-        };
-        fetch("{{ url_for('log_failure_reason') }}", {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(postData)
-        }).then(r => r.json()).then(data => {
-            if (data.status === 'success') {
-                reasonModal.style.display = 'none';
-                refreshDashboardData();
-            } else { alert(data.message); }
-        });
-    }
-
-    if(reasonModalCloseBtn) reasonModalCloseBtn.onclick = () => reasonModal.style.display = 'none';
-    window.onclick = (e) => { if(e.target == reasonModal) reasonModal.style.display = 'none'; };
-
-    // Drag & Drop
-    let draggedItemCode = null;
-    function attachDragEvents() {
-        document.querySelectorAll('.draggable-item').forEach(draggable => {
-            draggable.addEventListener('dragstart', (e) => {
-                draggedItemCode = draggable.getAttribute('data-item-code');
-                draggable.classList.add('dragging');
-                e.dataTransfer.effectAllowed = "move";
-            });
-            draggable.addEventListener('dragend', () => {
-                draggable.classList.remove('dragging');
-                draggedItemCode = null;
-            });
-        });
-    }
-
-    function attachDropEvents() {
-        document.querySelectorAll('.drop-target').forEach(target => {
-            target.addEventListener('dragover', (e) => { e.preventDefault(); e.currentTarget.classList.add('drag-over'); });
-            target.addEventListener('dragleave', (e) => { e.currentTarget.classList.remove('drag-over'); });
-            target.addEventListener('drop', handleDrop);
-        });
-    }
-
-    function handleDrop(e) {
-        e.preventDefault();
-        e.currentTarget.classList.remove('drag-over');
-        if (!draggedItemCode) return;
-        let toStage = e.currentTarget.getAttribute('data-stage');
-        if (e.currentTarget.classList.contains('monthly-dispatch-card')) toStage = 'Dispatch';
-        const qty = prompt(`Moving ${draggedItemCode} to ${toStage}. Quantity:`, "1");
-        if (qty && parseInt(qty) > 0) {
-            const url = (toStage === 'Dispatch') ? '/dispatch_item' : '/move_item';
-            const formData = new FormData();
-            formData.append('item_code', draggedItemCode);
-            formData.append('quantity', qty);
-            if(toStage !== 'Dispatch') {
-                formData.append('from_stage', 'FG');
-                formData.append('to_stage', toStage);
-            }
-            fetch(url, { method: 'POST', body: formData }).then(() => refreshDashboardData());
-        }
-    }
-
-    attachDropEvents();
-
-    // Fullscreen
-    const fullscreenToggle = document.getElementById('fullscreen-toggle');
-    if (fullscreenToggle) {
-        const enterIcon = document.getElementById('fullscreen-enter-icon');
-        const exitIcon = document.getElementById('fullscreen-exit-icon');
-        fullscreenToggle.addEventListener('click', () => {
-            if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(err => alert(err));
-            else if (document.exitFullscreen) document.exitFullscreen();
-        });
-        document.addEventListener('fullscreenchange', () => {
-            if (document.fullscreenElement) { enterIcon.style.display = 'none'; exitIcon.style.display = 'block'; }
-            else { enterIcon.style.display = 'block'; exitIcon.style.display = 'none'; }
-        });
-    }
-
-    // Init & Poll
-    refreshDashboardData();
-    if (planTableBody) setInterval(refreshDashboardData, 3000);
-});
 </script>
+<script src="{{ url_for('static', filename='js/dashboard.js') }}?v=6"></script>
 {% endblock %}

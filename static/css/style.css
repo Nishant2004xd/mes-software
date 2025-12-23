@@ -3,172 +3,239 @@
 
 /* --- CSS Variables --- */
 :root {
-    --nav-bg: #1f2937; /* Darker, slightly blue-grey */
-    --nav-text: #9ca3af;
-    --nav-header: #ffffff;
-    --nav-hover-bg: #374151;
-    --nav-hover-text: #ffffff;
-    --main-bg: #f3f4f6; /* Lighter grey for more contrast */
-    --content-bg: #ffffff;
-    --text-primary: #111827;
-    --text-secondary: #6b7280;
-    --border-color: #e5e7eb;
-    --accent-color: #d95319;       /* Dark Red-Orange (for buttons) */
-    --accent-color-hover: #b74311;   /* Darker Red-Orange for hover */
-    --link-color: #d95319;       /* Dark Red-Orange (for text links) */
-    --link-color-hover: #b74311;
-    --success-bg: #dcfce7;
-    --success-text: #166534;
-    --error-bg: #fee2e2;
-    --error-text: #991b1b;
+    /* Modern Dark Slate Palette */
+    --nav-bg: #0f172a;        /* Deep Slate Blue (Sidebar & Navbar) */
+    --nav-border: #1e293b;    /* Slightly lighter for borders */
+    --nav-text: #94a3b8;      /* Muted Slate */
+    --nav-text-hover: #f8fafc; /* White hover */
+    --sidebar-width: 260px;
+    
+    --main-bg: #ffffff;       /* CHANGED: Pure White Background */
+    --content-bg: #ffffff;    /* White cards/tables */
+    --border-color: #e2e8f0;
+    
+    --text-primary: #1e293b;
+    --text-secondary: #64748b;
+    
+    --accent-color: #ea580c;
+    --accent-color-hover: #c2410c; 
+    
+    --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+    --profile-hover: rgba(255, 255, 255, 0.1);
 }
 
 /* --- General Body Styling --- */
 body {
     margin: 0;
-    font-family: 'Inter', sans-serif;
-    background-color: var(--main-bg);
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    
+    /* Force white background and remove any images */
+    background-color: #ffffff !important;
+    background-image: none !important;
+    
     color: var(--text-primary);
-    position: relative; /* Required for the pseudo-element background */
-    overflow-x: hidden; /* Prevent horizontal scroll when sidebar pushes */
+    overflow-x: hidden;
+    min-height: 100vh;
 }
 
-/* Background image with opacity */
+
+
+/* Explicitly hide the pseudo-element that held the image */
 body::before {
-    content: '';
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100vw;
-    height: 100vh;
-    z-index: -1;
-    background-image: url('../images/foundry-8.jpg');
-    background-size: cover;
-    background-position: center;
-    background-repeat: no-repeat;
-    opacity: 0.20;
-    filter: grayscale(100%);
+    display: none !important;
+    content: none !important;
+    background-image: none !important;
 }
+
 
 /* =========================================
    NAVBAR & SIDEBAR STYLES
    ========================================= */
 
-/* --- Top Navigation Bar --- */
+/* --- Top Navigation Bar (Dark Theme) --- */
 .top-nav {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    background-color: var(--nav-bg);
-    color: var(--nav-text);
-    height: 60px;
-    padding: 0 20px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    background-color: var(--nav-bg); /* Dark background (Slate) */
+    height: 64px;
+    padding: 0 24px;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
     position: sticky;
     top: 0;
-    z-index: 1002; /* Highest priority - stays on top */
-    width: 100%;
-    box-sizing: border-box;
+    z-index: 1002;
+    border-bottom: 1px solid var(--nav-border);
+    color: var(--nav-text);
 }
 
-/* Wrapper for Left Elements */
+/* Wrapper for Left Elements (Toggle & Logo) */
 .nav-left {
     display: flex;
     align-items: center;
+    gap: 20px;
 }
 
-/* Logo (First item on left) */
+/* Logo */
 .logo-img {
-    height: 25px;
+    height: 32px;
     width: auto;
     display: block;
-    flex-shrink: 0;
-    margin-right: 15px; /* Space between Logo and Menu Button */
+    /* Optional: If your logo is black text, uncomment below to invert it to white */
+    /* filter: brightness(0) invert(1); */
 }
 
-/* Hamburger/Close Menu Button (Right of Logo) */
+/* Sidebar Toggle Button */
 .menu-btn {
-    background: none;
-    border: none;
+    background: transparent;
+    border: 1px solid var(--nav-border);
+    border-radius: 6px;
     cursor: pointer;
     color: var(--nav-text);
-    padding: 5px;
+    padding: 6px;
     display: flex;
     align-items: center;
-    transition: color 0.2s;
+    justify-content: center;
+    transition: all 0.2s ease;
 }
-.menu-btn:hover { color: #fff; }
+.menu-btn:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+    color: var(--nav-text-hover);
+    border-color: var(--nav-text-hover);
+}
 
-/* Icon Swapping Logic */
-.menu-btn .close-icon { display: none; } /* Hide Close icon by default */
-.menu-btn .menu-icon { display: block; } /* Show Menu icon by default */
-
-/* When Sidebar is Open (body has .sb-open) */
+/* Icon Swapping Logic for Toggle */
+.menu-btn .close-icon { display: none; }
+.menu-btn .menu-icon { display: block; }
 body.sb-open .menu-btn .menu-icon { display: none; }
 body.sb-open .menu-btn .close-icon { display: block; }
 
 
-/* Settings Icon Container */
+/* --- Right Side Actions (Settings & Profile) --- */
 .nav-actions {
-    flex-shrink: 0;
     display: flex;
     align-items: center;
+    gap: 15px; /* Space between Settings and Profile */
 }
-.nav-actions .feather-icon {
-    stroke: var(--nav-text);
-    transition: stroke 0.2s;
+
+
+
+/* --- Profile Section Styles --- */
+.profile-menu {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 12px;
+    border-radius: 30px; /* Pill shape */
+    background-color: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--nav-border);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    user-select: none;
 }
-.nav-actions a:hover .feather-icon {
-    stroke: var(--nav-hover-text);
+
+.profile-menu:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.2);
 }
+
+.profile-avatar {
+    width: 32px;
+    height: 32px;
+    background-color: var(--accent-color);
+    color: white;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 600;
+    font-size: 13px;
+    letter-spacing: 0.5px;
+}
+
+.profile-info {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.2;
+    margin-right: 5px;
+}
+
+.profile-name {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--nav-text-hover); /* White text */
+}
+
+.profile-role {
+    font-size: 0.7rem;
+    color: var(--nav-text);
+}
+
 
 /* --- Sidebar Styles --- */
 .sidebar {
-    height: calc(100vh - 60px); /* Full height minus Navbar height */
-    width: 260px;
+    height: calc(100vh - 64px); /* Full height minus Navbar */
+    width: var(--sidebar-width);
     position: fixed;
     z-index: 1001; /* Below Navbar */
-    top: 60px; /* Starts below Navbar */
-    left: -260px; /* Hidden by default */
-    background-color: var(--nav-bg);
-    overflow-x: hidden;
-    transition: left 0.3s ease; /* Smooth slide effect */
-    box-shadow: 2px 0 5px rgba(0,0,0,0.2);
-    padding-top: 10px;
-    border-top: 1px solid #374151; /* Separator line from navbar */
+    top: 64px; /* Starts below Navbar */
+    left: calc(var(--sidebar-width) * -1); /* Hidden by default */
+    background-color: var(--nav-bg); /* Dark sidebar */
+    transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    padding: 20px 15px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--nav-border);
 }
 
 /* Sidebar Links List */
 .sidebar-links {
-    list-style-type: none;
+    list-style: none;
     padding: 0;
     margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px; /* Spacing between items */
 }
+
 .sidebar-links li a {
-    padding: 15px 25px;
+    padding: 12px 16px;
     text-decoration: none;
-    font-size: 1rem;
+    font-size: 0.95rem;
+    font-weight: 500;
     color: var(--nav-text);
     display: flex;
     align-items: center;
     gap: 12px;
-    transition: 0.2s;
-    border-left: 4px solid transparent;
+    border-radius: 8px; /* Modern rounded shape */
+    transition: all 0.2s ease;
+    border-left: none; 
 }
+
 .sidebar-links li a:hover {
-    color: #fff;
-    background-color: var(--nav-hover-bg);
-}
-.sidebar-links li a.active {
-    color: #fff;
     background-color: rgba(255, 255, 255, 0.05);
-    border-left: 4px solid var(--accent-color);
+    color: var(--nav-text-hover);
+    transform: translateX(4px); /* Subtle slide effect */
 }
+
+.sidebar-links li a.active {
+    background-color: var(--accent-color);
+    color: #ffffff;
+    box-shadow: 0 4px 6px rgba(234, 88, 12, 0.3); /* Glow effect for active item */
+}
+
 .sidebar-icon {
     width: 20px;
     height: 20px;
+    opacity: 0.9;
 }
 
+/* Sidebar Separator Line */
+.sidebar hr {
+    border: 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    margin: 15px 0;
+}
 /* =========================================
    MAIN CONTENT & PUSH LOGIC
    ========================================= */
@@ -191,12 +258,15 @@ body.sb-open .menu-btn .close-icon { display: block; }
     border-bottom: 1px solid var(--border-color);
 }
 .header h1 { margin: 0; }
-
-/* --- OPEN STATE STYLES (When Sidebar is Active) --- */
-
-/* 1. Slide sidebar in */
+/* --- OPEN STATE STYLES --- */
 body.sb-open .sidebar {
     left: 0;
+    box-shadow: 4px 0 24px rgba(0,0,0,0.15);
+}
+
+body.sb-open .main-content {
+    margin-left: var(--sidebar-width);
+    width: calc(100% - var(--sidebar-width));
 }
 
 /* 2. Push Main Content right and adjust width */
@@ -417,4 +487,303 @@ td.action-buttons .button,
 td.action-buttons form {
     display: inline-block;
     margin: 0 2px;
+}
+
+/* =========================================
+   NEW SETTINGS MODAL UI
+   ========================================= */
+
+/* Modal Container Override */
+.settings-modal-content {
+    padding: 0;
+    border: none;
+    border-radius: 12px;
+    background-color: #f8fafc; /* Light gray background for contrast */
+    max-width: 550px;
+    overflow: hidden;
+}
+
+/* Header */
+.settings-header {
+    background-color: #fff;
+    padding: 20px 24px;
+    border-bottom: 1px solid #e2e8f0;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+}
+.header-text h2 { margin: 0; font-size: 1.25rem; color: #0f172a; font-weight: 700; }
+.header-text p { margin: 4px 0 0 0; font-size: 0.85rem; color: #64748b; }
+.settings-header .close-button { color: #94a3b8; font-size: 1.5rem; line-height: 1; transition: color 0.2s; }
+.settings-header .close-button:hover { color: #ef4444; }
+
+/* Body */
+.settings-body { padding: 24px; display: flex; flex-direction: column; gap: 20px; }
+
+/* Cards */
+.settings-card {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+    overflow: hidden;
+}
+
+.card-header {
+    padding: 16px;
+    border-bottom: 1px solid #f1f5f9;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.card-icon {
+    width: 40px; height: 40px;
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+}
+
+.card-title { flex-grow: 1; }
+.card-title h3 { margin: 0; font-size: 1rem; font-weight: 600; color: #1e293b; }
+.card-subtitle { font-size: 0.75rem; color: #64748b; }
+
+/* Status Badges */
+.status-badge {
+    padding: 4px 10px; border-radius: 20px;
+    font-size: 0.75rem; font-weight: 600;
+    display: flex; align-items: center; gap: 6px;
+}
+.status-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.status-badge.success { background: #dcfce7; color: #166534; }
+.status-badge.warning { background: #fff7ed; color: #c2410c; }
+
+.card-content { padding: 16px; }
+
+/* Info Box */
+.upload-info {
+    padding: 12px; border-radius: 6px; margin-bottom: 16px;
+    font-size: 0.85rem; display: flex; justify-content: space-between; align-items: center;
+}
+.upload-info.success { background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; }
+.upload-info.warning { background: #fffbeb; border: 1px solid #fcd34d; color: #92400e; }
+.info-text strong { display: block; font-size: 0.8rem; text-transform: uppercase; margin-bottom: 2px; }
+.button-ghost { background: transparent; border: 1px solid #fecaca; color: #ef4444; }
+.button-ghost:hover { background: #fef2f2; }
+
+/* Modern File Input */
+.modern-upload-form { display: flex; gap: 10px; }
+.file-input-wrapper { flex-grow: 1; position: relative; height: 36px; }
+.file-input-wrapper input[type="file"] {
+    position: absolute; width: 100%; height: 100%; opacity: 0; cursor: pointer; z-index: 2;
+}
+.file-label {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    background: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 6px;
+    display: flex; align-items: center; padding: 0 12px; box-sizing: border-box;
+    transition: all 0.2s;
+}
+.file-input-wrapper input[type="file"]:hover + .file-label { border-color: #94a3b8; background: #f1f5f9; }
+.file-cta {
+    background: #fff; border: 1px solid #e2e8f0; padding: 2px 8px; border-radius: 4px;
+    font-size: 0.75rem; font-weight: 600; color: #475569; margin-right: 10px;
+}
+.file-name { font-size: 0.85rem; color: #64748b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.upload-btn { height: 36px; padding: 0 20px; }
+
+/* Master Data specific */
+.secondary-card .card-header { background-color: #fafafa; }
+.master-actions { display: flex; align-items: center; justify-content: space-between; }
+
+/* Simple Logout Dropdown */
+.nav-actions { position: relative; }
+.profile-menu { position: relative; }
+.profile-dropdown-content {
+    display: none;
+    position: absolute;
+    top: 50px;
+    right: 0;
+    background-color: #fff;
+    min-width: 120px;
+    box-shadow: 0 8px 16px rgba(0,0,0,0.1);
+    z-index: 2000;
+    border-radius: 6px;
+    border: 1px solid #e2e8f0;
+    overflow: hidden;
+}
+.profile-menu:hover + .profile-dropdown-content,
+.profile-dropdown-content:hover {
+    display: block;
+}
+.profile-dropdown-content a {
+    color: #ef4444;
+    padding: 12px 16px;
+    text-decoration: none;
+    display: block;
+    font-size: 0.9rem;
+    font-weight: 500;
+}
+.profile-dropdown-content a:hover {
+    background-color: #fef2f2;
+}
+
+/* =========================================
+   NAVBAR PROFILE DROPDOWN
+   ========================================= */
+
+.profile-dropdown {
+    position: relative;
+    display: inline-block;
+}
+
+/* Trigger Styles */
+.profile-menu {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 12px;
+    border-radius: 30px;
+    background-color: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--nav-border);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    user-select: none;
+}
+
+.profile-menu:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Arrow Rotation on Hover */
+.dropdown-arrow {
+    transition: transform 0.3s ease;
+    color: var(--nav-text);
+}
+
+.profile-dropdown:hover .dropdown-arrow {
+    transform: rotate(180deg);
+}
+
+/* Dropdown Content Box */
+.dropdown-content {
+    display: none; /* Hidden by default */
+    position: absolute;
+    right: 0;
+    top: 110%; /* Just below the trigger */
+    background-color: #ffffff;
+    min-width: 180px;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    z-index: 2000;
+    overflow: hidden;
+    animation: fadeIn 0.2s ease-out;
+}
+
+/* Show on Hover */
+.profile-dropdown:hover .dropdown-content {
+    display: block;
+}
+
+/* Keyframes for smooth appearance */
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Dropdown Header (Username/Email) */
+.dropdown-header {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-color);
+    background-color: #f8fafc;
+}
+
+.user-email {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+/* Dropdown Links */
+.dropdown-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    text-decoration: none;
+    font-size: 0.9rem;
+    color: var(--text-main);
+    transition: background-color 0.2s;
+}
+
+.dropdown-item:hover {
+    background-color: #f1f5f9;
+}
+
+/* Logout Specific Style */
+.logout-item {
+    color: #ef4444; /* Red color */
+    font-weight: 500;
+}
+
+.logout-item:hover {
+    background-color: #fef2f2;
+}
+
+
+/* =========================================
+   SETTINGS MODAL - SIDE-BY-SIDE LAYOUT
+   ========================================= */
+
+/* 1. Make the modal wider to fit two cards */
+.settings-modal-content {
+    padding: 0;
+    border: none;
+    border-radius: 12px;
+    background-color: #f8fafc;
+    max-width: 900px !important; /* Force width increase */
+    width: 95%;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    max-height: 90vh;
+}
+
+/* 2. Grid Layout for cards */
+.settings-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr; /* Two equal columns */
+    gap: 20px;
+    align-items: start;
+}
+
+/* 3. Ensure cards take full height */
+.settings-card {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+    overflow: hidden;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+.card-content {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 16px;
+}
+
+/* Responsive: Stack on mobile */
+@media (max-width: 768px) {
+    .settings-grid {
+        grid-template-columns: 1fr;
+    }
 }

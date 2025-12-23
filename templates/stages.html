@@ -3,126 +3,170 @@
 {% block title %}Manage Stages{% endblock %}
 
 {% block content %}
-<style>
-    /* Fix for close button z-index */
-    .close-button {
-        position: relative;
-        z-index: 1051; /* Higher than modal content */
-    }
-</style>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/stages.css') }}">
 
-<div class="header">
-    <h1>Manufacturing Stages Flow</h1>
-    <div class="actions">
-        <button id="show-add-modal-btn" class="button">Create New Stage</button>
+<div class="page-container">
+    <div class="content-card">
+        
+        {# --- Command Bar --- #}
+        <div class="filter-toolbar">
+            <div class="toolbar-section">
+                <h1 class="toolbar-title">Manufacturing Stages</h1>
+                <span class="toolbar-subtitle">Drag and drop rows to reorder process flow</span>
+            </div>
+
+            <div class="toolbar-actions">
+                <button id="show-add-modal-btn" class="button button-primary">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                    New Stage
+                </button>
+            </div>
+        </div>
+
+        {# --- Table --- #}
+        <div class="table-container">
+            <table id="stages-table" class="modern-table">
+                <thead>
+                    <tr>
+                        <th class="col-center" style="width: 50px;">Order</th>
+                        <th class="col-center" style="width: 50px;">Move</th>
+                        <th style="width: 250px;">Stage Name</th>
+                        <th class="col-center">Dashboard Visibility</th>
+                        <th class="col-center" style="width: 150px;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="sortable-rows">
+                    {% for stage in stages %}
+                    {# FIX: Added |trim to handle potential whitespace issues in DB #}
+                    {% set is_locked = stage.stage_name|trim in ['Not Started', 'FG'] %}
+
+                    <tr class="{% if not is_locked %}draggable-row{% endif %} {% if is_locked %}locked-row{% endif %}" 
+                        data-id="{{ stage.id }}"
+                        {% if not is_locked %}draggable="true"{% endif %}
+                        style="{% if is_locked %}background-color: #f8fafc;{% endif %}">
+
+                        <td class="sno-cell col-center" style="color: #94a3b8; font-weight: 600;">{{ loop.index }}</td>
+
+                        <td class="drag-handle col-center" style="{% if is_locked %}cursor: not-allowed; opacity: 0.3;{% else %}cursor: grab;{% endif %}">
+                            {% if is_locked %}
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                            {% else %}
+                                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
+                            {% endif %}
+                        </td>
+
+                        <td class="stage-name-cell">
+                            <span class="stage-label">{{ stage.stage_name }}</span>
+                            {% if is_locked %}
+                                <span class="badge badge-gray" style="margin-left: 8px; font-size: 0.65rem;">System</span>
+                            {% endif %}
+                        </td>
+
+                        <td class="col-center">
+                            {% if stage.is_dashboard_stage %}
+                                <span class="badge badge-success">Visible</span>
+                            {% else %}
+                                <span class="badge badge-gray">Hidden</span>
+                            {% endif %}
+                        </td>
+
+                        <td class="action-buttons">
+                            {% if is_locked %}
+                                <span style="color: #cbd5e1; font-size: 0.8rem; font-style: italic;">Locked</span>
+                            {% else %}
+                                <button class="button button-small button-secondary"
+                                    onclick="openEditModal('{{ stage.id }}', '{{ stage.stage_name }}', '{{ stage.is_dashboard_stage }}')">
+                                    Edit
+                                </button>
+                                <form action="{{ url_for('delete_stage') }}" method="POST" onsubmit="return confirm('Delete stage {{ stage.stage_name }}? This will remove the column from the database.');" style="display:inline;">
+                                    <input type="hidden" name="stage_id" value="{{ stage.id }}">
+                                    <input type="hidden" name="stage_name" value="{{ stage.stage_name }}">
+                                    <button type="submit" class="button button-small button-danger">✕</button>
+                                </form>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="5" class="placeholder">No stages defined.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
     </div>
 </div>
 
-<div class="table-container">
-    <table id="stages-table">
-        <thead>
-            <tr>
-                <th style="width: 60px;">S.No</th> <th style="width: 60px;">Move</th>
-                <th>Stage Name</th>
-                <th style="width: 100px; text-align: center;">Dashboard</th>
-                <th style="width: 150px;">Actions</th>
-            </tr>
-        </thead>
-        <tbody id="sortable-rows">
-            {% for stage in stages %}
-            {% set is_locked = stage.stage_name in ['Not Started', 'FG'] %}
-
-            <tr class="{% if not is_locked %}draggable-row{% endif %}"
-                data-id="{{ stage.id }}"
-                {% if not is_locked %}draggable="true"{% endif %}
-                style="{% if is_locked %}background-color: #f9fafb;{% endif %}">
-
-                <td class="sno-cell" style="text-align: center;">{{ loop.index }}</td>
-
-                <td class="drag-handle" style="text-align: center; color: #aaa; {% if is_locked %}cursor: not-allowed; opacity: 0.3;{% else %}cursor: grab;{% endif %}">
-                    {% if is_locked %}
-                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
-                    {% else %}
-                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
-                    {% endif %}
-                </td>
-
-                <td style="font-weight: 500; {% if is_locked %}color: #555;{% endif %}">{{ stage.stage_name }}</td>
-
-                <td style="text-align: center;">
-                    {% if stage.is_dashboard_stage %}
-                        <span style="color: green;">✔ Yes</span>
-                    {% else %}
-                        <span style="color: #ccc;">No</span>
-                    {% endif %}
-                </td>
-
-                <td class="action-buttons">
-                    {% if is_locked %}
-                        <span style="color: #999; font-size: 0.8em; font-style: italic;">System Stage<br>(Locked)</span>
-                    {% else %}
-                        <button class="button button-small"
-                            onclick="openEditModal('{{ stage.id }}', '{{ stage.stage_name }}', '{{ stage.is_dashboard_stage }}')">
-                            Edit
-                        </button>
-                        <form action="{{ url_for('delete_stage') }}" method="POST" onsubmit="return confirm('Remove {{ stage.stage_name }}?');" style="display:inline;">
-                            <input type="hidden" name="stage_id" value="{{ stage.id }}">
-                            <input type="hidden" name="stage_name" value="{{ stage.stage_name }}">
-                            <button type="submit" class="button button-small button-danger">Delete</button>
-                        </form>
-                    {% endif %}
-                </td>
-            </tr>
-            {% else %}
-            <tr><td colspan="5" class="placeholder">No stages defined.</td></tr>
-            {% endfor %}
-        </tbody>
-    </table>
-</div>
+{# --- Modern Modals --- #}
 
 <div id="add-stage-modal" class="modal">
-    <div class="modal-content">
-        <span class="close-button" id="close-add-modal">&times;</span>
-        <h3>Add New Stage</h3>
-        <form action="{{ url_for('add_stage') }}" method="POST">
-            <div class="modal-form-grid">
-                <div>
-                    <label>Stage Name (e.g., Painting)</label>
-                    <input type="text" name="stage_name" class="modal-input" required placeholder="Enter exact stage name">
-                </div>
-                <div style="margin-top: 15px; display: flex; align-items: center; gap: 10px;">
-                    <input type="checkbox" id="add_include_dashboard" name="include_dashboard" checked style="width: auto; transform: scale(1.2);">
-                    <label for="add_include_dashboard" style="margin: 0; cursor: pointer;">Show card on Dashboard</label>
-                </div>
+    <div class="modal-content items-modal-content">
+        <div class="items-modal-header">
+            <div class="header-text">
+                <h2>New Stage</h2>
+                <p>Define a new production step</p>
             </div>
-            <div class="form-actions">
-                <button type="submit" class="button">Create Stage</button>
-            </div>
-        </form>
+            <span class="close-button" id="close-add-modal">&times;</span>
+        </div>
+
+        <div class="items-modal-body">
+            <form action="{{ url_for('add_stage') }}" method="POST">
+                <div class="items-form-grid" style="display: block;"> <div class="form-group" style="margin-bottom: 20px;">
+                        <label>Stage Name</label>
+                        <input type="text" name="stage_name" class="items-input" required placeholder="e.g. Quality Check" autocomplete="off">
+                        <small style="color: #64748b; font-size: 0.75rem; margin-top: 4px; display: block;">This will add a new column to the database.</small>
+                    </div>
+                    
+                    <div class="form-group" style="background: #f8fafc; padding: 12px; border-radius: 6px; border: 1px solid #e2e8f0; display: flex; align-items: center; gap: 12px;">
+                        <input type="checkbox" id="add_include_dashboard" name="include_dashboard" checked style="width: 18px; height: 18px; cursor: pointer;">
+                        <div>
+                            <label for="add_include_dashboard" style="margin: 0; cursor: pointer; color: #0f172a; font-size: 0.9rem;">Show on Dashboard</label>
+                            <div style="font-size: 0.75rem; color: #64748b;">Include this stage in the top summary cards</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="items-modal-footer">
+                    <button type="submit" class="button button-primary">Create Stage</button>
+                </div>
+            </form>
+        </div>
     </div>
 </div>
 
 <div id="edit-stage-modal" class="modal">
-    <div class="modal-content">
-        <span class="close-button" id="close-edit-modal">&times;</span>
-        <h3>Edit Stage</h3>
-        <form action="{{ url_for('edit_stage') }}" method="POST">
-            <input type="hidden" id="edit_stage_id" name="stage_id">
-            <input type="hidden" id="edit_original_name" name="original_name">
-            <div class="modal-form-grid">
-                <div>
-                    <label>Stage Name</label>
-                    <input type="text" id="edit_stage_name" name="stage_name" class="modal-input" required>
-                </div>
-                <div style="margin-top: 15px; display: flex; align-items: center; gap: 10px;">
-                    <input type="checkbox" id="edit_include_dashboard" name="include_dashboard" style="width: auto; transform: scale(1.2);">
-                    <label for="edit_include_dashboard" style="margin: 0; cursor: pointer;">Show card on Dashboard</label>
-                </div>
+    <div class="modal-content items-modal-content">
+        <div class="items-modal-header">
+            <div class="header-text">
+                <h2>Edit Stage</h2>
+                <p>Update stage properties</p>
             </div>
-            <div class="form-actions">
-                <button type="submit" class="button">Update Stage</button>
-            </div>
-        </form>
+            <span class="close-button" id="close-edit-modal">&times;</span>
+        </div>
+
+        <div class="items-modal-body">
+            <form action="{{ url_for('edit_stage') }}" method="POST">
+                <input type="hidden" id="edit_stage_id" name="stage_id">
+                <input type="hidden" id="edit_original_name" name="original_name">
+
+                <div class="items-form-grid" style="display: block;">
+                    <div class="form-group" style="margin-bottom: 20px;">
+                        <label>Stage Name</label>
+                        <input type="text" id="edit_stage_name" name="stage_name" class="items-input" required>
+                    </div>
+                    
+                    <div class="form-group" style="background: #f8fafc; padding: 12px; border-radius: 6px; border: 1px solid #e2e8f0; display: flex; align-items: center; gap: 12px;">
+                        <input type="checkbox" id="edit_include_dashboard" name="include_dashboard" style="width: 18px; height: 18px; cursor: pointer;">
+                        <div>
+                            <label for="edit_include_dashboard" style="margin: 0; cursor: pointer; color: #0f172a; font-size: 0.9rem;">Show on Dashboard</label>
+                            <div style="font-size: 0.75rem; color: #64748b;">Include this stage in the top summary cards</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="items-modal-footer">
+                    <button type="submit" class="button button-primary">Save Changes</button>
+                </div>
+            </form>
+        </div>
     </div>
 </div>
 {% endblock %}
@@ -130,118 +174,11 @@
 {% block scripts %}
 {{ super() }}
 <script>
-    document.addEventListener('DOMContentLoaded', function() {
-        const addModal = document.getElementById('add-stage-modal');
-        const editModal = document.getElementById('edit-stage-modal');
-
-        const addBtn = document.getElementById('show-add-modal-btn');
-
-        // Specific close buttons (using IDs to be safe)
-        const closeAddBtn = document.getElementById('close-add-modal');
-        const closeEditBtn = document.getElementById('close-edit-modal');
-
-        // --- Open Add Modal ---
-        if (addBtn) {
-            addBtn.addEventListener('click', function() {
-                addModal.style.display = "block";
-            });
+    window.stagesConfig = {
+        urls: {
+            reorderStages: "{{ url_for('reorder_stages') }}"
         }
-
-        // --- Close Logic ---
-        if (closeAddBtn) {
-            closeAddBtn.onclick = function() {
-                addModal.style.display = "none";
-            }
-        }
-
-        if (closeEditBtn) {
-            closeEditBtn.onclick = function() {
-                editModal.style.display = "none";
-            }
-        }
-
-        // Close on outside click
-        window.onclick = function(event) {
-            if (event.target == addModal) addModal.style.display = "none";
-            if (event.target == editModal) editModal.style.display = "none";
-        }
-
-        // Drag and Drop (Keep existing logic)
-        const tbody = document.getElementById('sortable-rows');
-        let draggedRow = null;
-
-        if (tbody) {
-            tbody.addEventListener('dragstart', function(e) {
-                draggedRow = e.target;
-                e.target.style.opacity = '0.5';
-            });
-
-            tbody.addEventListener('dragend', function(e) {
-                e.target.style.opacity = '';
-                saveNewOrder();
-            });
-
-            tbody.addEventListener('dragover', function(e) {
-                e.preventDefault();
-                const afterElement = getDragAfterElement(tbody, e.clientY);
-                if (afterElement == null) {
-                    tbody.appendChild(draggedRow);
-                } else {
-                    tbody.insertBefore(draggedRow, afterElement);
-                }
-            });
-        }
-
-        function getDragAfterElement(container, y) {
-            const draggableElements = [...container.querySelectorAll('.draggable-row:not([style*="opacity: 0.5"])')];
-
-            return draggableElements.reduce((closest, child) => {
-                const box = child.getBoundingClientRect();
-                const offset = y - box.top - box.height / 2;
-                if (offset < 0 && offset > closest.offset) {
-                    return { offset: offset, element: child };
-                } else {
-                    return closest;
-                }
-            }, { offset: Number.NEGATIVE_INFINITY }).element;
-        }
-
-        function saveNewOrder() {
-            const rows = document.querySelectorAll('.draggable-row');
-            const orderIds = Array.from(rows).map(row => row.getAttribute('data-id'));
-
-            fetch("{{ url_for('reorder_stages') }}", {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ order: orderIds })
-            })
-            .then(res => res.json())
-            .then(data => {
-                if(data.status === 'success') {
-                    // Update S.No visuals
-                    rows.forEach((row, index) => {
-                        row.querySelector('.sno-cell').textContent = index + 1;
-                    });
-                }
-            });
-        }
-    });
-
-    // Global function for Edit (needs to be outside DOMContentLoaded to be called by onclick in HTML)
-    window.openEditModal = function(id, name, isDashboard) {
-        document.getElementById('edit_stage_id').value = id;
-        document.getElementById('edit_original_name').value = name;
-        document.getElementById('edit_stage_name').value = name;
-
-        const chk = document.getElementById('edit_include_dashboard');
-        // Check formatting (Python boolean str vs JS)
-        if (isDashboard == 'True' || isDashboard == '1' || isDashboard === true) {
-            chk.checked = true;
-        } else {
-            chk.checked = false;
-        }
-
-        document.getElementById('edit-stage-modal').style.display = "block";
-    }
+    };
 </script>
+<script src="{{ url_for('static', filename='js/stages.js') }}"></script>
 {% endblock %}
