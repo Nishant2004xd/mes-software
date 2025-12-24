@@ -1,5 +1,17 @@
+# .gitignore
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+.venv/
 venv/
-.env
-project_export.txt
+env/
+
+# IDE settings
+.vscode/
+.idea/
+
+# Database / Secrets (Optional, but good practice)
+*.log
+instance/
