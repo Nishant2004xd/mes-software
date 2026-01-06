@@ -213,6 +213,35 @@
                             </form>
                         </div>
                     </div>
+                    
+                    <div class="settings-card">
+                        <div class="card-header">
+                            <div class="card-icon" style="background: #fdf4ff; color: #86198f;">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+                            </div>
+                            <div class="card-title">
+                                <h3>WIP & Stock</h3>
+                                <span class="card-subtitle">Update PDI, Hydro, PC & Released</span>
+                            </div>
+                        </div>
+
+                        <div class="card-content">
+                            <div class="upload-info" style="background-color: #f8fafc; border: 1px solid #e2e8f0; color: #64748b;">
+                                <p style="margin:0;">Uploads 2nd Sheet: Updates Master WIP & Released Qty.</p>
+                            </div>
+
+                            <form action="{{ url_for('upload_wip_stock') }}" method="POST" enctype="multipart/form-data" class="modern-upload-form">
+                                <div class="file-input-wrapper">
+                                    <input type="file" name="file" id="wip-file" accept=".xlsx, .xls" required onchange="updateFileName(this)">
+                                    <label for="wip-file" class="file-label">
+                                        <span class="file-cta">Choose Excel</span>
+                                        <span class="file-name">No file selected</span>
+                                    </label>
+                                </div>
+                                <button type="submit" class="button button-primary upload-btn">Upload WIP</button>
+                            </form>
+                        </div>
+                    </div>
 
                 </div> </div>
         </div>

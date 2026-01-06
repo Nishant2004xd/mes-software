@@ -287,7 +287,6 @@ def prioritize_plan_with_ahp(df_plan, weights):
 # In app/routes.py
 
 # In app/routes.py
-
 @app.route('/', endpoint='production_planning')
 @login_required
 def production_planning():
@@ -332,7 +331,8 @@ def production_planning():
             try:
                 cursor.execute("SELECT COUNT(*) FROM master")
                 if cursor.fetchone()[0] > 0: master_has_data = True
-            except: master_has_data = False
+            except: 
+                master_has_data = False
 
             cursor.execute("SELECT status_value FROM app_status WHERE status_key = 'last_triggers_upload_timestamp'")
             row = cursor.fetchone()
@@ -347,7 +347,8 @@ def production_planning():
                 
                 cursor.execute("SELECT DISTINCT [Category] FROM Production_pl WHERE [Category] IS NOT NULL ORDER BY [Category]")
                 all_categories = [row[0] for row in cursor.fetchall()]
-            except: pass
+            except: 
+                pass
 
             # 3. Fetch Production Plan (With Filters & WIP)
             try:
@@ -375,12 +376,20 @@ def production_planning():
                 if total_items > 0:
                     total_pages = ceil(total_items / per_page)
                     
-                    # WIP Logic
+                    # --- WIP Logic: Exclude First Stage & FG ---
                     try:
-                        all_stages = get_dynamic_stages(cursor)
+                        # Fetch all stages (Not dashboard only)
+                        cursor.execute("SELECT stage_name FROM manufacturing_stages ORDER BY display_order ASC")
+                        all_stages = [row[0] for row in cursor.fetchall()]
                     except: all_stages = []
+                    
                     if not all_stages: all_stages = STAGES
-                    wip_stages = [s for s in all_stages if s not in ['FG', 'Not Started']]
+                    
+                    # Identify first stage
+                    first_stage = all_stages[0]
+                    
+                    # Build Sum SQL: Exclude FG and First Stage
+                    wip_stages = [s for s in all_stages if s != 'FG' and s != first_stage]
                     wip_sum_sql = " + ".join([f"ISNULL(m.[{s}], 0)" for s in wip_stages]) if wip_stages else "0"
 
                     sql_select_plans = f"""
@@ -419,8 +428,12 @@ def production_planning():
                     sql_overdue += " ORDER BY [DUE DT] ASC"
                     cursor.execute(sql_overdue, ov_params)
                     overdue_items = [row_to_dict(cursor, row) for row in cursor.fetchall()]
-                except: pass
+                except: 
+                    pass
 
+        except Exception as e:
+            flash(f"Error loading production plan: {e}", "error")
+            traceback.print_exc()
         finally:
             conn.close()
 
@@ -454,6 +467,7 @@ def production_planning():
                            current_per_page=per_page)
 
 
+
 @app.route('/wip_tracking', endpoint='wip_tracking')
 @login_required
 def wip_tracking():
@@ -484,14 +498,18 @@ def wip_tracking():
     try:
         cursor = conn.cursor()
 
-        # 1. FETCH ALL DB STAGES
         cursor.execute("SELECT stage_name FROM manufacturing_stages ORDER BY display_order ASC")
         all_db_stages = [row[0] for row in cursor.fetchall()]
+        
+        # IDENTIFY THE FIRST STAGE (e.g., "Yet to be Released" or "Not Started")
+        first_stage_name = all_db_stages[0] if all_db_stages else None
 
-        # 2. Define Display Stages (Grouped View)
-        display_stages = ['Before Hydro']
+        # 2. Define Display Stages (Standard View)
+        display_stages = []
         for s in all_db_stages:
-            if s not in BEFORE_HYDRO_GROUP and s != 'Not Started':
+            # We hide the first stage from the columns if desired, or keep it. 
+            # Usually "Yet to be Released" is kept visible, but excluded from Total.
+            if s != 'Not Started': # You can adjust this if you want to hide the renamed stage too
                 display_stages.append(s)
 
         # 3. Build Query
@@ -529,15 +547,20 @@ def wip_tracking():
         # 6. Process Items
         import json
         for item in master_items:
-            # A. Calculate Total Inv
+            # A. Calculate Total Inv (Dynamic Sum)
+            # LOGIC: Sum all stages EXCEPT the First Stage and FG
             current_total = 0
             for stage in all_db_stages:
-                if stage in ['Not Started', 'FG']: continue
+                if stage == 'FG': continue
+                if stage == first_stage_name: continue # Exclude "Yet to be Released"
+                
                 qty = item.get(stage)
                 if qty: current_total += int(qty)
+            
             item['Total Inv'] = current_total
 
-            # B. Calculate "Before Hydro" Group
+            # B. (Optional) We can leave this calculation in or remove it. 
+            # Since the column is removed, it won't be displayed, but we keep it to prevent errors if referenced elsewhere.
             group_sum = 0
             breakdown = {}
             for sub in BEFORE_HYDRO_GROUP:
@@ -563,8 +586,8 @@ def wip_tracking():
 
     return render_template('wip.html',
                            master_items=master_items,
-                           stages=display_stages,
-                           group_stages=BEFORE_HYDRO_GROUP, # Pass group order to frontend
+                           stages=display_stages, 
+                           group_stages=BEFORE_HYDRO_GROUP, 
                            type_options=type_options,
                            category_options=category_options,
                            selected_type=selected_type,
@@ -583,26 +606,34 @@ def release_plan():
     try:
         cursor = conn.cursor()
 
-        # 1. Sync 'Modified Release plan' from Production_pl TO 'Not Started' in master
-        # FIX: Changed logic to REPLACE (=) instead of ADD (+)
-        sync_sql = """
-            IF EXISTS (SELECT * FROM sys.columns WHERE Name = N'Not Started' AND Object_ID = Object_ID(N'master'))
+        # --- FIX: Dynamically identify the first stage (formerly 'Not Started') ---
+        # We fetch the stage with the lowest display order (usually the entry stage)
+        cursor.execute("SELECT TOP 1 stage_name FROM manufacturing_stages ORDER BY display_order ASC")
+        row = cursor.fetchone()
+        
+        if not row:
+            flash("Configuration Error: No manufacturing stages found.", 'error')
+            return redirect(url_for('production_planning'))
+            
+        target_stage = row[0] # This will be 'Yet to be Released' (or whatever you renamed it to)
+
+        # 1. Sync 'Modified Release plan' from Production_pl TO the Dynamic Target Stage in master
+        sync_sql = f"""
+            IF EXISTS (SELECT * FROM sys.columns WHERE Name = N'{target_stage}' AND Object_ID = Object_ID(N'master'))
             BEGIN
                 UPDATE m
-                SET m.[Not Started] = p.[Modified Release plan]
+                SET m.[{target_stage}] = p.[Modified Release plan]
                 FROM master m
                 INNER JOIN Production_pl p ON m.[Item code] = p.[Item code ]
-                -- We update even if plan is 0, to effectively 'clear' the order if the plan changed to 0
             END
         """
         cursor.execute(sync_sql)
 
-        # 2. Update 'Today Triggered' in Production_pl to match what was just released
-        # This locks in the "Released Qty" for the day
+        # 2. Update 'Today Triggered' in Production_pl
         cursor.execute("UPDATE Production_pl SET [Today Triggered] = [Modified Release plan]")
 
         conn.commit()
-        flash('Plan Released successfully! "Not Started" quantities have been updated (replaced).', 'success')
+        flash(f'Plan Released successfully! "{target_stage}" quantities have been updated.', 'success')
 
     except Exception as e:
         if conn: conn.rollback()
@@ -627,7 +658,7 @@ def dashboard():
 
     conn = get_db_connection()
 
-    # --- 1. INITIALIZE DEFAULTS (Vital for preventing UndefinedError) ---
+    # --- 1. INITIALIZE DEFAULTS ---
     stage_totals = {}
     top_plans = []
     vertical_overview = []
@@ -637,32 +668,31 @@ def dashboard():
     daily_adherence = 0
     monthly_adherence = 0
     total_monthly_dispatch = 0
-    monthly_trigger_adherence = 0  # <--- INITIALIZE HERE
+    monthly_trigger_adherence = 0
     failure_reasons = FAILURE_REASONS
     show_failure_button = True
     current_stages = []
 
-    # Handle DB Connection Failure
     if not conn:
         flash('Database connection failed.', 'error')
-        # We must pass the default 'monthly_trigger_adherence=0' here too
         return render_template('dashboard.html', current_view='overview', stages=[], show_failure_button=False,
                                stage_totals={}, top_plans=[], pagination=None, vertical_overview=[],
                                category_overview=[],
                                total_monthly_dispatch=0, daily_adherence=0, monthly_adherence=0, 
-                               monthly_trigger_adherence=0, # <--- PASS IT HERE
+                               monthly_trigger_adherence=0,
                                failure_reasons=[], all_verticals=[])
 
     try:
         cursor = conn.cursor()
         
-        # --- FIX: Ensure 'Next Pending' column exists before querying ---
+        # Ensure 'Next Pending' column exists
         cursor.execute("""
             IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'Next Pending' AND Object_ID = Object_ID(N'master'))
             ALTER TABLE master ADD [Next Pending] INT DEFAULT 0 WITH VALUES;
         """)
         conn.commit()
 
+        # Fetch Stages for Display
         current_stages = get_dynamic_stages(cursor, dashboard_only=True)
 
         # 1. ENSURE TABLES EXIST
@@ -676,10 +706,48 @@ def dashboard():
         """)
         conn.commit()
 
-        # 2. Basic Totals
-        cursor.execute("SELECT SUM(ISNULL([Total Inv], 0)) FROM master")
-        total_wip_inventory = cursor.fetchone()[0] or 0
+        # --- 2. CALCULATE TOTAL WIP INVENTORY (Dynamic Rule) ---
+        # Rule: Sum of all stages EXCEPT the First Stage ("Yet to be Released") and "FG".
+        try:
+            # 1. Fetch ALL manufacturing stages (ordered)
+            cursor.execute("SELECT stage_name FROM manufacturing_stages ORDER BY display_order ASC")
+            all_db_stages = [row[0] for row in cursor.fetchall()]
 
+            if all_db_stages:
+                # Identify the "Entry" stage (First in list)
+                first_stage_name = all_db_stages[0] 
+                
+                # 2. Filter stages to sum: 
+                #    Must NOT be 'FG' 
+                #    Must NOT be the first stage (e.g., 'Yet to be Released', 'Not Started')
+                calc_stages = []
+                for s in all_db_stages:
+                    # STRICT FILTERING
+                    if s == 'FG': continue
+                    if s == first_stage_name: continue
+                    if s in ['Not Started', 'Yet to be Released']: continue # Hardcoded safety check
+
+                    calc_stages.append(s)
+                
+                # Debugging output (Check your terminal when refreshing dashboard)
+                print(f"DEBUG: Total WIP Calculation logic:")
+                print(f"   - Excluded First Stage: {first_stage_name}")
+                print(f"   - Included Stages: {calc_stages}")
+
+                if calc_stages:
+                    # 3. Build Sum SQL
+                    sum_sql = " + ".join([f"ISNULL([{s}], 0)" for s in calc_stages])
+                    cursor.execute(f"SELECT SUM({sum_sql}) FROM master")
+                    total_wip_inventory = cursor.fetchone()[0] or 0
+                else:
+                    total_wip_inventory = 0
+            else:
+                total_wip_inventory = 0
+        except Exception as e:
+            print(f"Error calculating WIP: {e}")
+            total_wip_inventory = 0
+
+        # Check for Production_pl table
         cursor.execute("IF OBJECT_ID('dbo.Production_pl', 'U') IS NOT NULL SELECT 1 ELSE SELECT 0")
         if cursor.fetchone()[0] == 1:
             cursor.execute(
@@ -695,7 +763,7 @@ def dashboard():
         else:
             total_daily_target = 0
 
-        # Calculate Actual Dispatch from LOGS (2 AM Cutoff) - FROM FG TO DISPATCH
+        # Calculate Actual Dispatch from LOGS
         sql_daily_actual = """
                     DECLARE @CurrentProductionDate DATE = CAST(DATEADD(hour, -2, GETDATE()) AS DATE);
                     DECLARE @ProductionDayStart DATETIME = DATEADD(hour, 2, CAST(@CurrentProductionDate AS DATETIME));
@@ -722,8 +790,7 @@ def dashboard():
         cursor.execute(sql_monthly_dispatch)
         total_monthly_dispatch = cursor.fetchone()[0] or 0
         
-        # --- 5. CALCULATE MONTHLY TRIGGER ADHERENCE ---
-        # Call the helper function defined in step 1 of previous solution
+        # 5. MONTHLY TRIGGER ADHERENCE
         monthly_trigger_adherence = calculate_monthly_trigger_adherence(conn)
 
         # --- VIEW LOGIC ---
@@ -774,7 +841,7 @@ def dashboard():
                                    all_verticals=all_verticals_list,
                                    daily_adherence=daily_adherence,
                                    total_monthly_dispatch=total_monthly_dispatch,
-                                   monthly_trigger_adherence=monthly_trigger_adherence, # <--- PASS HERE
+                                   monthly_trigger_adherence=monthly_trigger_adherence,
                                    show_failure_button=show_failure_button)
 
         else:
@@ -958,23 +1025,11 @@ def dashboard():
                                    all_verticals=all_verticals_list,
                                    daily_adherence=daily_adherence,
                                    total_monthly_dispatch=total_monthly_dispatch,
-                                   monthly_trigger_adherence=monthly_trigger_adherence, # <--- PASS HERE
+                                   monthly_trigger_adherence=monthly_trigger_adherence,
                                    failure_reasons=failure_reasons,
                                    show_failure_button=show_failure_button)
-
-    except Exception as e:
-        flash(f"An error occurred: {e}", "error")
-        traceback.print_exc()
-        # FALLBACK RENDER: Must include 'monthly_trigger_adherence'
-        return render_template('dashboard.html', current_view='overview', stages=[], show_failure_button=False,
-                               stage_totals={}, top_plans=[], pagination=None, vertical_overview=[],
-                               category_overview=[],
-                               total_monthly_dispatch=0, daily_adherence=0, monthly_adherence=0, 
-                               monthly_trigger_adherence=0, # <--- PASS HERE TO FIX THE ERROR
-                               failure_reasons=[],
-                               all_verticals=[])
     finally:
-        if conn: conn.close()
+        conn.close()
 
 def calculate_monthly_trigger_adherence(conn, item_codes=None, verticals=None, categories=None, types=None):
     """
@@ -1524,9 +1579,8 @@ def attendance():
 
 
 
-# In app/routes.py
-
 @app.route('/generate_plan', methods=['POST'], endpoint='generate_plan')
+@login_required
 def generate_plan():
     # --- 1. SECURITY CHECK: Verify Triggers Uploaded ---
     conn = get_db_connection()
@@ -1536,50 +1590,72 @@ def generate_plan():
 
     try:
         cursor = conn.cursor()
+        
+        # Check upload timestamp to ensure fresh triggers
         cursor.execute("SELECT status_value FROM app_status WHERE status_key = 'last_triggers_upload_timestamp'")
         row = cursor.fetchone()
 
         triggers_valid = False
         if row and row[0]:
-            upload_time = pd.to_datetime(row[0])
-            now = datetime.now()
-            if now.hour < 2:
-                current_prod_date = (now - timedelta(days=1)).date()
-            else:
-                current_prod_date = now.date()
-            if upload_time.date() >= current_prod_date:
-                triggers_valid = True
+            try:
+                upload_time = pd.to_datetime(row[0])
+                now = datetime.now()
+                # Logic: If before 2 AM, it belongs to the previous production day
+                if now.hour < 2:
+                    current_prod_date = (now - timedelta(days=1)).date()
+                else:
+                    current_prod_date = now.date()
+                
+                if upload_time.date() >= current_prod_date:
+                    triggers_valid = True
+            except Exception:
+                # If parsing fails, treat as invalid
+                pass 
 
         if not triggers_valid:
             flash('Error: You must upload the Pending Triggers file for today before generating the plan.', 'error')
             return redirect(url_for('production_planning'))
 
-        # --- 2. PROCEED WITH GENERATION ---
-        ahp_weights = session.get('ahp_weights', DEFAULT_AHP_WEIGHTS.copy())
-
-        # Ensure Columns Exist in Master/Production_pl
+        # --- 2. ENSURE COLUMNS EXIST ---
         cursor.execute("""
             IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'Daily Max Plan' AND Object_ID = Object_ID(N'master'))
                 ALTER TABLE master ADD [Daily Max Plan] INT DEFAULT 0 WITH VALUES;
             IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'Max Inv' AND Object_ID = Object_ID(N'master'))
                 ALTER TABLE master ADD [Max Inv] INT DEFAULT 0 WITH VALUES;
-            IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'CalculatedTrigger' AND Object_ID = Object_ID(N'Production_pl'))
-                ALTER TABLE Production_pl ADD [CalculatedTrigger] INT DEFAULT 0 WITH VALUES;
-             -- Ensure Live Dispatch exists in Master
             IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'Live Dispatch' AND Object_ID = Object_ID(N'master'))
                 ALTER TABLE master ADD [Live Dispatch] INT DEFAULT 0 WITH VALUES;
+            
+            -- Ensure Production_pl columns
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'CalculatedTrigger' AND Object_ID = Object_ID(N'Production_pl'))
+                ALTER TABLE Production_pl ADD [CalculatedTrigger] INT DEFAULT 0 WITH VALUES;
         """)
         conn.commit()
 
-        # --- 3. CALCULATE PLAN (New Formula) ---
+        # --- 3. DYNAMIC STAGE IDENTIFICATION ---
+        # Fetch stages in order
+        cursor.execute("SELECT stage_name FROM manufacturing_stages ORDER BY display_order ASC")
+        all_stages = [row[0] for row in cursor.fetchall()]
+        
+        if not all_stages:
+            all_stages = [
+                'Not Started', 'Long seam', 'Dish fit up', 'Cirseam welding', 
+                'Part assembly', 'Full welding', 'Hydro Testing', 
+                'Powder coating', 'PDI', 'FG'
+            ]
 
-        # We need to sum up the WIP stages to get "Current WIP".
-        # We assume stages are columns in master. We exclude 'Not Started' and 'FG' from WIP usually,
-        # but based on your previous 'Calculated_Total_Inv' logic, we sum the active stages.
-        # Ensure STAGES list is available or hardcoded for the SQL sum.
-        # Default active stages for WIP calculation:
-        wip_stages_sql = "ISNULL([Long seam], 0) + ISNULL([Dish fit up], 0) + ISNULL([Cirseam welding], 0) + ISNULL([Part assembly], 0) + ISNULL([Full welding], 0) + ISNULL([Hydro Testing], 0) + ISNULL([Powder coating], 0) + ISNULL([PDI], 0)"
+        first_stage = all_stages[0] # e.g., "Yet to be Released"
 
+        # --- 4. CONSTRUCT WIP SQL ---
+        # Rule: Sum of all stages EXCEPT First Stage ("Yet to be Released") and "FG"
+        wip_calc_stages = [s for s in all_stages if s != 'FG' and s != first_stage]
+        
+        if wip_calc_stages:
+            wip_stages_sql = " + ".join([f"ISNULL([{s}], 0)" for s in wip_calc_stages])
+        else:
+            wip_stages_sql = "0"
+
+        # --- 5. FETCH DATA & CALCULATE CAPACITY ---
+        # We calculate "Current_WIP" dynamically here
         sql_query = f"""
         WITH CalculatedData AS (
             SELECT 
@@ -1597,67 +1673,96 @@ def generate_plan():
                 ISNULL([Live Dispatch], 0) as [Current_Dispatch]
             FROM dbo.master
         )
-        SELECT * FROM CalculatedData
+        SELECT 
+            *,
+            -- Capacity Formula: (Max Inv - Current WIP) + Dispatch
+            -- If WIP exceeds Max, capacity is 0 (unless dispatch frees up space)
+            CASE 
+                WHEN ([Max_Inventory] - [Current_WIP]) + [Current_Dispatch] < 0 THEN 0
+                ELSE ([Max_Inventory] - [Current_WIP]) + [Current_Dispatch]
+            END AS [Calculated_Capacity]
+        FROM CalculatedData
+        WHERE [Pending_Trigger] > 0
         """
+        
+        plan_df = pd.read_sql(sql_query, conn)
 
-        plan_df = pd.read_sql_query(sql_query, conn)
+        if plan_df.empty:
+            flash('No pending triggers found to generate a plan.', 'info')
+            return redirect(url_for('production_planning'))
 
-        # --- APPLY THE FORMULAS ---
+        # --- 6. CALCULATE PRODUCTION PLAN ---
+        # Formula: Plan = Min(Pending, Capacity, Daily Max)
+        def calculate_plan(row):
+            pending = row['Pending_Trigger']
+            capacity = row['Calculated_Capacity']
+            daily_max = row['Max_Daily_Plan']
 
-        # 1. Available WIP Space = Max Inventory - Current WIP
-        plan_df['Available_WIP_Space'] = plan_df['Max_Inventory'] - plan_df['Current_WIP']
+            # 1. Determine the limit (Capacity vs Daily Max)
+            limit = capacity
+            if daily_max > 0:
+                limit = min(capacity, daily_max)
+            
+            # 2. Plan cannot exceed Pending
+            plan_qty = min(pending, limit)
+            
+            return max(0, int(plan_qty))
 
-        # 2. Total Potential = Available WIP Space + Pending Trigger
-        plan_df['Total_Potential'] = plan_df['Available_WIP_Space'] + plan_df['Pending_Trigger']
+        plan_df['Production Plan'] = plan_df.apply(calculate_plan, axis=1)
 
-        # 3. Actual Production = MAX(0, MIN(Total Potential, Available WIP space, Max Daily Plan))
-        # We use apply to handle the row-wise MIN logic
-        def calculate_actual(row):
-            # min() of the three values
-            val = min(row['Total_Potential'], row['Available_WIP_Space'], row['Max_Daily_Plan'])
-            # max(0, val)
-            return max(0, val)
+        # Remove 0 quantity plans
+        plan_df = plan_df[plan_df['Production Plan'] > 0]
 
-        plan_df['Daily Suggested Release Plan'] = plan_df.apply(calculate_actual, axis=1).astype(int)
+        if plan_df.empty:
+            flash('Plan generated but all quantities are 0 due to Capacity/Max limits.', 'warning')
+            return redirect(url_for('production_planning'))
 
-        # Note: "New Pending Trigger" is not stored in the DB during generation (that happens on release),
-        # but the plan is now derived correctly.
-
-        # --- 4. FINALIZE DATAFRAME FOR SAVING ---
-
-        # Prepare columns for Production_pl table
-        plan_df['Item code'] = plan_df['Item code'].astype(str).str.strip()
-
-        # Set Modified Plan default to the Calculated Plan
-        plan_df['Modified Release plan'] = plan_df['Daily Suggested Release Plan']
-
-        # For Adherence/Dashboard: Set CalculatedTrigger to the Suggestion
-        plan_df['CalculatedTrigger'] = plan_df['Daily Suggested Release Plan']
-
-        # Apply AHP Priority Sorting
+        # --- 7. PRIORITIZATION (AHP) ---
+        ahp_weights = session.get('ahp_weights', {
+            'pending': 0.4, 'rpl': 0.3, 'category': 0.2, 'type': 0.1
+        })
+        
         prioritized_df = prioritize_plan_with_ahp(plan_df, ahp_weights)
+        
+        # Sort and Add S.No.
+        prioritized_df.sort_values(by='priority_weight', ascending=False, inplace=True)
+        prioritized_df.reset_index(drop=True, inplace=True)
+        prioritized_df['S.No.'] = prioritized_df.index + 1
 
-        final_plan_to_save = prioritized_df.sort_values(by='priority_weight', ascending=False)
-        final_plan_to_save.reset_index(drop=True, inplace=True)
-        final_plan_to_save.insert(0, 'S.No.', final_plan_to_save.index + 1)
+        # --- 8. SAVE TO DB ---
+        cursor.execute("DELETE FROM Production_pl")
 
-        # Initialize other required columns
-        final_plan_to_save['Today Triggered'] = 0
-        final_plan_to_save['Failure in Trigger'] = 0
-        final_plan_to_save['Dispatch'] = final_plan_to_save['Current_Dispatch']
+        insert_sql = """
+            INSERT INTO Production_pl (
+                [S.No.], [Item code ], [Description], [Vertical], [Category], [Type], [Model],
+                [Pending Trigger], [Max Inv], [Daily Max Plan], [WIP], [Live Dispatch],
+                [Production Plan], [Modified Release plan], [CalculatedTrigger], 
+                [Today Triggered], [priority_weight]
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+        """
+        
+        for index, row in prioritized_df.iterrows():
+            cursor.execute(insert_sql,
+                row['S.No.'],
+                row['Item code'],
+                row['Description'],
+                row['Vertical'],
+                row['Category'],
+                row['Type'],
+                row['Model'],
+                row['Pending_Trigger'],
+                row['Max_Inventory'],
+                row['Max_Daily_Plan'],
+                row['Current_WIP'],
+                row['Current_Dispatch'],
+                row['Production Plan'],
+                row['Production Plan'], # Modified starts as Calculated
+                row['Production Plan'], # CalculatedTrigger stores the original calc
+                row['priority_weight']
+            )
 
-        # Rename for DB compatibility
-        final_plan_to_save.rename(columns={'Item code': 'Item code ', 'Pending_Trigger': 'Pending'}, inplace=True)
-
-        # Drop temp calculation columns
-        cols_to_drop = ['Available_WIP_Space', 'Total_Potential', 'Max_Inventory', 'Max_Daily_Plan', 'Current_WIP',
-                        'Current_Dispatch', 'type_score', 'rpl_score', 'category_score', 'qty_score']
-        final_plan_to_save.drop(columns=cols_to_drop, inplace=True, errors='ignore')
-
-        replace_table_with_df(final_plan_to_save, 'Production_pl', cursor)
         conn.commit()
-
-        flash('Production Plan generated successfully using Capacity Constraints.', 'success')
+        flash(f'Plan generated successfully for {len(prioritized_df)} items.', 'success')
 
     except Exception as e:
         if conn: conn.rollback()
@@ -1667,8 +1772,6 @@ def generate_plan():
         if conn: conn.close()
 
     return redirect(url_for('production_planning'))
-
-
 
 @app.route('/delete_triggers', methods=['POST'], endpoint='delete_triggers')
 def delete_triggers():
@@ -1705,7 +1808,6 @@ def delete_triggers():
 
     return redirect(request.referrer or url_for('production_planning'))
 
-
 @app.route('/update_single_plan', methods=['POST'])
 def update_single_plan():
     data = request.get_json()
@@ -1727,35 +1829,33 @@ def update_single_plan():
         cursor = conn.cursor()
 
         # 1. Update Production Plan Table
-        # Note: Production_pl usually has "[Item code ]" with a space
         sql_plan = "UPDATE Production_pl SET [Modified Release plan] = ? WHERE [Item code ] LIKE ?"
         cursor.execute(sql_plan, (new_plan_value, item_code))
 
-        # 2. Update Master Table (Not Started)
-        # Note: master usually has "[Item code]" without a space
-        # We only update if the "Not Started" column exists
-        sql_master = """
-            IF EXISTS (SELECT * FROM sys.columns WHERE Name = N'Not Started' AND Object_ID = Object_ID(N'master'))
+        # --- FIX: Update Master Table (Dynamic Stage) ---
+        cursor.execute("SELECT TOP 1 stage_name FROM manufacturing_stages ORDER BY display_order ASC")
+        row = cursor.fetchone()
+        target_stage = row[0] if row else 'Not Started'
+
+        # Update the dynamic stage (e.g., 'Yet to be Released')
+        sql_master = f"""
+            IF EXISTS (SELECT * FROM sys.columns WHERE Name = N'{target_stage}' AND Object_ID = Object_ID(N'master'))
             BEGIN
                 UPDATE master 
-                SET [Not Started] = ? 
+                SET [{target_stage}] = ?
                 WHERE [Item code] LIKE ?
             END
         """
         cursor.execute(sql_master, (new_plan_value, item_code))
 
         # 3. Recalculate Priorities (AHP)
-        # Read table back
         updated_plan_df = pd.read_sql("SELECT * FROM Production_pl", conn)
-
-        # Helper to normalize column names for pandas
         if 'Item code' in updated_plan_df.columns:
             updated_plan_df.rename(columns={'Item code': 'Item code '}, inplace=True)
 
         ahp_weights = session.get('ahp_weights', DEFAULT_AHP_WEIGHTS.copy())
         re_prioritized_df = prioritize_plan_with_ahp(updated_plan_df, ahp_weights)
 
-        # Update weights in DB
         for index, row in re_prioritized_df.iterrows():
             code = row['Item code ']
             new_weight = row['priority_weight']
@@ -2401,8 +2501,31 @@ def upload_triggers():
         for col_name in ['TRIGGER DT', 'DUE DT']:
             actual_col = next((c for c in df.columns if str(c).strip().upper() == col_name), None)
             if actual_col:
-                # 'dayfirst=True' ensures 05-01-2026 is read as Jan 5th, not May 1st
-                df[actual_col] = pd.to_datetime(df[actual_col], dayfirst=True, errors='coerce')
+                # First try parsing with dayfirst=True for DD-MM-YYYY format
+                try:
+                    df[actual_col] = pd.to_datetime(df[actual_col], dayfirst=True, errors='coerce')
+                    
+                    # If that fails, try parsing with explicit format DD-MM-YYYY
+                    mask = df[actual_col].isna()
+                    if mask.any():
+                        df.loc[mask, actual_col] = pd.to_datetime(
+                            df.loc[mask, actual_col], 
+                            format='%d-%m-%Y', 
+                            errors='coerce'
+                        )
+                        
+                    # Final fallback - try standard parsing
+                    mask = df[actual_col].isna()
+                    if mask.any():
+                        df.loc[mask, actual_col] = pd.to_datetime(
+                            df.loc[mask, actual_col], 
+                            errors='coerce'
+                        )
+                        
+                except Exception:
+                    # Fallback to standard parsing if all else fails
+                    df[actual_col] = pd.to_datetime(df[actual_col], errors='coerce')
+                
                 if str(actual_col).strip().upper() == 'DUE DT':
                     due_dt_col = actual_col
 
@@ -2521,10 +2644,12 @@ def upload_triggers():
         if filepath and os.path.exists(filepath): os.remove(filepath)
 
     return redirect(request.referrer or url_for('production_planning'))
+
 @app.route('/api/stage_totals')
 def api_stage_totals():
     """
     API endpoint to return the current WIP stage totals AND Monthly Data.
+    Explicitly calculates Total WIP excluding the first stage.
     """
     stage_totals = {}
     conn = get_db_connection()
@@ -2535,13 +2660,29 @@ def api_stage_totals():
             # 1. Fetch WIP Stage Totals
             current_stages = get_dynamic_stages(cursor, dashboard_only=True)
             if current_stages:
+                # Fetch first stage to exclude
+                cursor.execute("SELECT TOP 1 stage_name FROM manufacturing_stages ORDER BY display_order ASC")
+                row = cursor.fetchone()
+                first_stage = row[0] if row else None
+
+                # Calculate individual stage totals
                 sum_clauses = [f"SUM(ISNULL([{stage}], 0)) as [{stage}]" for stage in current_stages]
                 sql_wip = f"SELECT {', '.join(sum_clauses)} FROM master"
                 cursor.execute(sql_wip)
                 row = cursor.fetchone()
                 if row:
                     stage_totals = row_to_dict(cursor, row)
-            
+                    
+                    # --- FIX: Explicitly Calculate Total WIP (Excluding First Stage & FG) ---
+                    correct_total_wip = 0
+                    for stage_col, qty in stage_totals.items():
+                        # Exclude FG and the First Stage (e.g., 'Yet to be Released')
+                        if stage_col != 'FG' and stage_col != first_stage:
+                            correct_total_wip += (qty or 0)
+                    
+                    # Add this as a specific key for the frontend to use
+                    stage_totals['TotalWIP'] = correct_total_wip
+
             # 2. Fetch Monthly Dispatch
             sql_monthly = """
                 SELECT SUM(quantity) FROM production_log 
@@ -2553,7 +2694,7 @@ def api_stage_totals():
             monthly_val = cursor.fetchone()[0] or 0
             stage_totals['Dispatch'] = monthly_val
 
-            # 3. Calculate Monthly Trigger Adherence (NEW FORMULA)
+            # 3. Calculate Monthly Trigger Adherence
             monthly_adherence_val = calculate_monthly_trigger_adherence(conn)
             stage_totals['MonthlyTriggerAdherence'] = monthly_adherence_val
 
@@ -2565,27 +2706,7 @@ def api_stage_totals():
     return jsonify(stage_totals)
 
 
-@app.route('/api/inventory/<item_code>')
-def get_inventory_for_item(item_code):
-    """
-    API endpoint to return the inventory counts for a single item code.
-    """
-    inventory = {}
-    conn = get_db_connection()
-    if conn:
-        try:
-            cursor = conn.cursor()
-            stage_columns = ', '.join([f"[{stage}]" for stage in STAGES]) + ', [Live Dispatch] as [Dispatch]'
-            sql_query = f"SELECT {stage_columns} FROM master WHERE [Item code] = ?"
-            cursor.execute(sql_query, item_code)
-            row = cursor.fetchone()
-            if row:
-                inventory = row_to_dict(cursor, row)
-        except Exception as e:
-            print(f"API Error fetching single item inventory: {e}")
-        finally:
-            if conn: conn.close()
-    return jsonify(inventory)
+
 
 @app.route('/api/inventory/vertical/<vertical_name>')
 def get_inventory_for_vertical(vertical_name):
@@ -2737,14 +2858,12 @@ def api_adherence_category(category_name):
             conn.close()
     return jsonify(data)
 
-
 @app.route('/api/inventory/filtered', methods=['POST'])
 def api_inventory_filtered():
     data = request.get_json()
     item_codes = data.get('item_code', [])
     verticals = data.get('vertical', [])
     categories = data.get('category', [])
-    # --- NEW: Get Type ---
     types = data.get('type', [])
 
     inventory = {}
@@ -2769,7 +2888,6 @@ def api_inventory_filtered():
                 seq = ','.join(['?'] * len(categories))
                 base_filter += f" AND [Category] IN ({seq})"
                 params.extend(categories)
-            # --- NEW: SQL for Type ---
             if types:
                 seq = ','.join(['?'] * len(types))
                 base_filter += f" AND [Type] IN ({seq})"
@@ -2779,6 +2897,11 @@ def api_inventory_filtered():
             current_stages = get_dynamic_stages(cursor, dashboard_only=True)
             if not current_stages: current_stages = STAGES 
 
+            # Identify First Stage to exclude
+            cursor.execute("SELECT TOP 1 stage_name FROM manufacturing_stages ORDER BY display_order ASC")
+            row = cursor.fetchone()
+            first_stage = row[0] if row else None
+
             stage_columns_sum = ', '.join([f"SUM(ISNULL([{stage}], 0)) as [{stage}]" for stage in current_stages])
             
             sql_wip = f"SELECT {stage_columns_sum} FROM master WHERE 1=1 {base_filter}"
@@ -2786,6 +2909,15 @@ def api_inventory_filtered():
             row = cursor.fetchone()
             if row:
                 inventory = row_to_dict(cursor, row)
+                
+                # --- FIX: Calculate Correct Total WIP for Filtered Data ---
+                filtered_total_wip = 0
+                for stage_col, qty in inventory.items():
+                    if stage_col != 'FG' and stage_col != first_stage:
+                        filtered_total_wip += (qty or 0)
+                
+                inventory['TotalWIP'] = filtered_total_wip
+                inventory['Total Inv'] = filtered_total_wip # Legacy key support
 
             # --- 3. Get Monthly Dispatch ---
             sql_monthly = f"""
@@ -2811,9 +2943,6 @@ def api_inventory_filtered():
         finally:
             if conn: conn.close()
     return jsonify(inventory)
-
-
-
 
 @app.route('/items', endpoint='manage_items')
 @login_required
@@ -3018,7 +3147,8 @@ def delete_stage():
         cursor = conn.cursor()
 
         # --- 1. PROTECTION CHECK ---
-        if stage_name in ['Not Started', 'FG']:
+
+        if stage_name in ['FG']:  # Removed 'Not Started'
             flash(f"System stage '{stage_name}' cannot be deleted.", 'error')
             return redirect(url_for('manage_stages'))
 
@@ -3598,5 +3728,134 @@ def upload_dispatch():
                 os.remove(filepath)
             except PermissionError:
                 print(f"Warning: Could not remove {filepath} - File still locked.")
+
+    return redirect(request.referrer)
+
+
+@app.route('/upload_wip_stock', methods=['POST'], endpoint='upload_wip_stock')
+@login_required
+def upload_wip_stock():
+    if 'file' not in request.files or request.files['file'].filename == '':
+        flash('No file selected.', 'error')
+        return redirect(request.referrer)
+
+    file = request.files['file']
+    if not file.filename.endswith(('.xlsx', '.xls')):
+        flash('Invalid file type. Please upload an Excel file.', 'error')
+        return redirect(request.referrer)
+
+    filepath = None
+    conn = get_db_connection()
+    if not conn:
+        flash('Database connection failed.', 'error')
+        return redirect(request.referrer)
+
+    try:
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
+
+        # 1. Read Second Sheet (index 1)
+        try:
+            df = pd.read_excel(filepath, sheet_name=1)
+        except IndexError:
+            flash("Error: The Excel file does not have a second sheet.", 'error')
+            return redirect(request.referrer)
+        except Exception as e:
+            flash(f"Error reading Excel file: {e}", 'error')
+            return redirect(request.referrer)
+
+        # 2. Standardize Columns
+        df.columns = [str(c).strip() for c in df.columns]
+
+        # 3. Identify Item Code Column
+        item_code_col = next((c for c in df.columns if c.lower() in ['item code', 'itemcode', 'code', 'part no']), None)
+        
+        if not item_code_col:
+            flash("Could not find an 'Item code' column in the second sheet.", 'error')
+            return redirect(request.referrer)
+
+        # 4. Identify Data Columns
+        col_map = {
+            'PDI': None,
+            'PC': None,
+            'Hydro': None,
+            'WIP': None
+        }
+
+        for col in df.columns:
+            u_col = col.upper()
+            if u_col == 'PDI':
+                col_map['PDI'] = col
+            elif u_col in ['PC', 'POWDER COATING', 'POWDERCOATING']:
+                col_map['PC'] = col
+            elif u_col in ['HYDRO', 'HYDRO TESTING', 'HYDROTESTING']:
+                col_map['Hydro'] = col
+            elif u_col == 'WIP':
+                col_map['WIP'] = col
+
+        # Validate required columns
+        missing_cols = [k for k, v in col_map.items() if v is None]
+        if missing_cols:
+             flash(f"Missing columns in Excel: {', '.join(missing_cols)}", 'error')
+             return redirect(request.referrer)
+
+        cursor = conn.cursor()
+
+        # 5. Process Rows and Update DB
+        update_count = 0
+        
+        for index, row in df.iterrows():
+            item_code = str(row[item_code_col]).strip()
+            
+            # Helper to get float value safely
+            def get_val(excel_col_name):
+                try:
+                    val = float(row[excel_col_name])
+                    return 0 if pd.isna(val) else int(val)
+                except:
+                    return 0
+
+            pdi_val = get_val(col_map['PDI'])
+            pc_val = get_val(col_map['PC'])
+            hydro_val = get_val(col_map['Hydro'])
+            wip_val = get_val(col_map['WIP'])
+
+            # --- FORMULA ---
+            # Released = WIP - (PDI + PC + Hydro)
+            released_val = wip_val - (pdi_val + pc_val + hydro_val)
+
+            if released_val < 0: 
+                released_val = 0 
+
+            # --- UPDATE QUERY ---
+            # Explicitly updates the 'Released' column.
+            update_sql = """
+                UPDATE master 
+                SET 
+                    [PDI] = ?,
+                    [Hydro Testing] = ?,
+                    [Powder coating] = ?,
+                    [Released] = ?
+                WHERE [Item code] = ?
+            """
+            cursor.execute(update_sql, pdi_val, hydro_val, pc_val, released_val, item_code)
+            update_count += cursor.rowcount
+
+        conn.commit()
+        flash(f"Successfully processed {update_count} items. Updated PDI, Hydro, PC, and 'Released'.", 'success')
+
+    except Exception as e:
+        if conn: conn.rollback()
+        # This error helps debug if the column 'Released' doesn't exist
+        flash(f"Error processing upload: {e}", 'error')
+        traceback.print_exc()
+    finally:
+        if conn: conn.close()
+        if filepath and os.path.exists(filepath):
+            try:
+                os.remove(filepath)
+            except:
+                pass
 
     return redirect(request.referrer)

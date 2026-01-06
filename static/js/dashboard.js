@@ -171,19 +171,22 @@ document.addEventListener('DOMContentLoaded', function() {
 
     function updateCards(data) {
         if (!data) return;
-        let grandTotal = 0;
         
-        // Update Standard WIP Stages
+        // 1. Update Standard Individual Stage Cards
         stages.forEach(stage => {
             const count = parseInt(data[stage]) || 0;
-            if (stage !== 'FG') grandTotal += count;
             const card = document.querySelector(`.stage-card[data-stage="${stage}"]`);
             if (card) card.querySelector('.count').textContent = count;
         });
 
-        // Update Total Inv Card
+        // 2. Update Total Inv Card using the SERVER calculation
+        // Your Python API sends 'TotalWIP' or 'Total Inv' which already has the correct exclusion logic.
+        const totalWip = parseInt(data['TotalWIP']) || parseInt(data['Total Inv']) || 0;
+
         const totalCard = document.querySelector('.stage-card[data-stage="Total-Inv"] .count');
-        if (totalCard) totalCard.textContent = grandTotal;
+        if (totalCard) totalCard.textContent = totalWip;
+
+        // ... rest of function (Monthly Dispatch, Adherence, etc.) remains the same
         
         // Update Monthly Dispatch Card
         const dispatchCard = document.querySelector('.stage-card.monthly-dispatch-card .count');

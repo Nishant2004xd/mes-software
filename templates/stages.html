@@ -38,7 +38,7 @@
                 <tbody id="sortable-rows">
                     {% for stage in stages %}
                     {# FIX: Added |trim to handle potential whitespace issues in DB #}
-                    {% set is_locked = stage.stage_name|trim in ['Not Started', 'FG'] %}
+                    {% set is_locked = stage.stage_name|trim in ['FG'] %}
 
                     <tr class="{% if not is_locked %}draggable-row{% endif %} {% if is_locked %}locked-row{% endif %}" 
                         data-id="{{ stage.id }}"
