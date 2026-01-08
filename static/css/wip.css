@@ -14,7 +14,7 @@
     --bg-subtle: #f8fafc;
     --border-light: #e2e8f0;
     
-    /* Header Colors (Dark Slate) */
+    /* Header Colors */
     --header-bg: #334155; 
     --header-text: #ffffff;
     
@@ -27,6 +27,7 @@
 .page-container {
     display: flex;
     flex-direction: column;
+    /* Allow height to grow beyond screen for natural scrolling */
     min-height: calc(100vh - 85px); 
     overflow: visible; 
     padding: 0 4px 20px 4px;
@@ -42,7 +43,7 @@
     flex-direction: column;
     flex-grow: 1;
     min-height: 0;
-    height: auto;
+    height: auto; /* Auto height allows expansion */
 }
 
 /* --- Filter Toolbar --- */
@@ -140,10 +141,13 @@
 .button-primary { background-color: var(--primary-color); color: white; }
 .button-primary:hover { background-color: var(--primary-hover); transform: translateY(-1px); }
 
-/* --- Table Styles (Modern) --- */
+.button-ghost { background: transparent; border: 1px solid #e2e8f0; color: #64748b; }
+.button-ghost:hover { background: #f8fafc; color: #334155; border-color: #cbd5e1; }
+
+/* --- Table Styles (Natural Scroll) --- */
 .table-wrapper {
-    overflow: visible;
     width: 100%;
+    overflow: visible; /* Allow table to expand */
 }
 
 .modern-table {
@@ -154,10 +158,9 @@
     table-layout: auto; 
 }
 
-/* --- HEADER: NOT STICKY --- */
+/* --- Header: NOT Sticky --- */
 .modern-table th {
-    position: static; /* Removes sticky behavior */
-    
+    position: static; 
     background-color: var(--header-bg);
     color: var(--header-text);
     font-weight: 700;
@@ -215,7 +218,7 @@
 .clickable-cell:hover { text-decoration: underline; background-color: #ffedd5; }
 .quantity-zero { color: #cbd5e1; }
 
-/* --- Pagination: NOT STICKY --- */
+/* --- Pagination (Static) --- */
 .pagination-container {
     padding: 12px 24px;
     border-top: 1px solid var(--border-light);
@@ -225,7 +228,7 @@
     align-items: center;
     flex-shrink: 0;
     position: static;
-    box-shadow: none; /* Removed shadow since it's not floating */
+    box-shadow: none;
 }
 
 .pagination { display: flex; list-style: none; padding: 0; margin: 0; gap: 4px; }
@@ -239,211 +242,93 @@
 }
 
 .page-item.disabled .page-link { background: #f8fafc; border-color: #f1f5f9; color: #cbd5e1; pointer-events: none; }
-.page-link:hover:not(.disabled) { border-color: var(--primary-color); color: var(--primary-color); background-color: #fff7ed; transform: translateY(-1px); }
+.page-item.active .page-link { background-color: var(--primary-color) !important; border-color: var(--primary-color) !important; color: #ffffff !important; }
 
 /* =========================================
-   ENHANCED ACTION MODAL STYLES
+   ACTION MODAL STYLES
    ========================================= */
-
-/* Modal Container */
 .action-modal-content {
-    padding: 0; /* Remove default padding, handled by children */
-    border: none;
-    border-radius: 12px;
-    overflow: hidden;
-    max-width: 420px;
-    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
-}
-
-/* 1. Header */
-.modal-header {
-    background-color: var(--header-bg);
-    color: white;
-    padding: 16px 20px;
+    padding: 0; 
+    border: none; 
+    border-radius: 8px; 
+    overflow: hidden; 
+    max-width: 400px;
+    width: 95%; 
     display: flex;
-    justify-content: space-between;
-    align-items: center;
+    flex-direction: column;
+    max-height: 90vh; 
 }
 
-.modal-header h3 {
-    margin: 0;
-    font-size: 1.1rem;
-    font-weight: 600;
-    letter-spacing: 0.02em;
+.modal-header { 
+    background-color: var(--header-bg); 
+    color: white; 
+    padding: 12px 16px; 
+    display: flex; 
+    justify-content: space-between; 
+    align-items: center; 
+    flex-shrink: 0; 
 }
 
-.modal-header .close-button {
-    color: #94a3b8;
-    font-size: 24px;
-    line-height: 1;
-    cursor: pointer;
-    transition: color 0.2s;
-}
+.modal-header h3 { margin: 0; font-size: 1rem; font-weight: 600; }
 
-.modal-header .close-button:hover { color: white; }
-
-/* 2. Context Bar */
 .modal-context-bar {
-    background-color: #f1f5f9;
-    padding: 10px 20px;
-    border-bottom: 1px solid var(--border-light);
-    color: var(--text-secondary);
-    font-size: 0.85rem;
+    background-color: #f1f5f9; 
+    padding: 10px 20px; 
+    border-bottom: 1px solid var(--border-light); 
+    color: var(--text-secondary); 
+    font-size: 0.85rem; 
     font-weight: 500;
+    flex-shrink: 0;
 }
 
-/* 3. Body Layout */
-.modal-body {
-    padding: 0;
+.modal-body { 
+    padding: 0; 
+    overflow-y: auto; 
 }
 
-.action-section {
-    padding: 20px;
-    background-color: white;
+.action-section { padding: 20px; background-color: white; }
+.issue-section { padding: 15px 20px; background-color: #fffbeb; border-top: 1px solid #fcd34d; }
+
+.form-grid { display: flex; gap: 12px; margin-bottom: 15px; }
+.form-group { width: 100%; }
+
+.modal-label { 
+    display: block; font-size: 0.75rem; font-weight: 700; 
+    text-transform: uppercase; color: var(--text-secondary); margin-bottom: 6px; 
 }
 
-.issue-section {
-    padding: 15px 20px;
-    background-color: #fffbeb; /* Light Yellow/Orange for caution */
-    border-top: 1px solid #fcd34d;
+.modal-input { 
+    width: 100%; padding: 10px 12px; font-size: 0.95rem; 
+    border: 1px solid var(--border-light); border-radius: 6px; box-sizing: border-box; 
 }
-
-/* Form Elements */
-.form-grid {
-    display: flex;
-    gap: 12px;
-    margin-bottom: 15px;
-}
-
-.form-group {
-    width: 100%;
-}
-
-.modal-label {
-    display: block;
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    font-weight: 700;
-    color: var(--text-secondary);
-    margin-bottom: 6px;
-}
-
-.modal-input {
-    width: 100%;
-    padding: 10px 12px;
-    border: 1px solid var(--border-light);
-    border-radius: 6px;
-    font-size: 0.95rem;
-    color: var(--text-main);
-    transition: all 0.2s;
-    box-sizing: border-box;
-}
-
-.modal-input:focus {
-    border-color: var(--primary-color);
-    box-shadow: 0 0 0 3px rgba(234, 88, 12, 0.1);
-    outline: none;
-}
-
+.modal-input:focus { border-color: var(--primary-color); outline: none; box-shadow: 0 0 0 3px rgba(234, 88, 12, 0.1); }
 .font-bold { font-weight: 700; }
 
-/* Buttons */
-.btn-action-primary {
-    width: 100%;
-    height: 40px;
-    font-size: 0.95rem;
-    margin-top: 5px;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    background-color: var(--primary-color);
-    color: white;
-    border: none;
-    border-radius: 6px;
+.btn-action-primary, .btn-action-success { 
+    height: 40px; font-size: 0.95rem; margin-top: 5px; width: 100%; 
+    border-radius: 6px; border:none; color: white; cursor: pointer; 
+    display: flex; justify-content: center; align-items: center; gap: 6px; 
 }
+.btn-action-primary { background-color: var(--primary-color); }
 .btn-action-primary:hover { background-color: var(--primary-hover); }
 
-.btn-action-success {
-    width: 100%;
-    height: 40px;
-    font-size: 0.95rem;
-    background-color: var(--success-color);
-    color: white;
-    border: none;
-    border-radius: 6px;
-}
+.btn-action-success { background-color: var(--success-color); }
 .btn-action-success:hover { background-color: #15803d; }
 
-/* Issue Section Styles */
-.issue-header {
-    font-size: 0.75rem;
-    font-weight: 700;
-    color: #b45309;
-    text-transform: uppercase;
-    margin-bottom: 10px;
-    display: flex;
-    align-items: center;
-    gap: 6px;
+.btn-action-warning { 
+    height: 32px; font-size: 0.85rem; background: white; 
+    border: 1px solid #fcd34d; color: #b45309; width: 100%; border-radius: 6px; cursor: pointer; 
 }
-
-.btn-action-warning {
-    width: 100%;
-    height: 32px;
-    font-size: 0.85rem;
-    background-color: #fff;
-    border: 1px solid #fcd34d;
-    color: #b45309;
-    border-radius: 6px;
-    margin-top: 0;
-}
-.btn-action-warning:hover {
-    background-color: #fef3c7;
-    border-color: #d97706;
-}
+.btn-action-warning:hover { background-color: #fef3c7; }
 
 /* Custom Select Arrow */
-.select-wrapper {
-    position: relative;
+.select-wrapper { position: relative; }
+.select-wrapper::after { 
+    content: "▼"; font-size: 0.7rem; color: var(--text-secondary); 
+    position: absolute; right: 12px; top: 50%; transform: translateY(-50%); pointer-events: none; 
 }
-.select-wrapper::after {
-    content: "▼";
-    font-size: 0.7rem;
-    color: var(--text-secondary);
-    position: absolute;
-    right: 12px;
-    top: 50%;
-    transform: translateY(-50%);
-    pointer-events: none;
-}
-select.modal-input {
-    appearance: none;
-    background-color: white;
-}
-/* =========================================
-   NOT STARTED COLUMN HIGHLIGHT (PENDING QUEUE)
-   ========================================= */
+select.modal-input { appearance: none; background-color: white; cursor: pointer; }
 
-/* Header Style - Warm Amber to signify 'Queue/Pending' */
-.bg-not-started-header {
-    background-color: #fef3c7 !important; /* Amber-100 */
-    color: #92400e !important;           /* Amber-800 */
-    border-right: 2px solid #fcd34d !important; /* Strong Gold Border separator */
-}
-
-/* Cell Style - Lighter Amber */
-.bg-not-started-cell {
-    background-color: #fffbeb !important; /* Amber-50 */
-    color: #b45309;                       /* Amber-700 */
-    font-weight: 700;                     /* Bold text to show backlog count clearly */ /* subtle separator */
-}
-
-/* Maintain distinct color even on row hover */
-.modern-table tr:hover td.bg-not-started-cell {
-    background-color: #fef3c7 !important; /* Darkens slightly on hover to match header */
-}
-
-/* Ensure empty zeros are still subtle, but tinted correctly */
-.bg-not-started-cell.quantity-zero span {
-    color: #d1d5db !important; /* Light Gray for dashes */
-    opacity: 0.6;
-}
+/* Not Started Header */
+.bg-not-started-header { background-color: #fef3c7 !important; color: #92400e !important; border-right: 2px solid #fcd34d !important; }
+.bg-not-started-cell { background-color: #fffbeb !important; color: #b45309; font-weight: 700; }

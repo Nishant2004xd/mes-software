@@ -467,7 +467,6 @@ def production_planning():
                            current_per_page=per_page)
 
 
-
 @app.route('/wip_tracking', endpoint='wip_tracking')
 @login_required
 def wip_tracking():
@@ -483,7 +482,6 @@ def wip_tracking():
     type_options = ['Lean', 'Non Lean']
     category_options = ['Stranger', 'Runner', 'Repeater', 'Milk Run']
 
-    # --- GROUP DEFINITION (Ordered) ---
     BEFORE_HYDRO_GROUP = ["Long seam", "Dish fit up", "Cirseam welding", "Part assembly", "Full welding"]
 
     conn = get_db_connection()
@@ -492,34 +490,41 @@ def wip_tracking():
         return redirect(url_for('dashboard'))
 
     master_items = []
-    display_stages = [] # Stages to show in table
+    display_stages = [] 
     pagination = None
+    total_dispatch_today = 0  # New Variable
 
     try:
         cursor = conn.cursor()
 
+        # --- 1. Get Stages ---
         cursor.execute("SELECT stage_name FROM manufacturing_stages ORDER BY display_order ASC")
         all_db_stages = [row[0] for row in cursor.fetchall()]
-        
-        # IDENTIFY THE FIRST STAGE (e.g., "Yet to be Released" or "Not Started")
         first_stage_name = all_db_stages[0] if all_db_stages else None
 
-        # 2. Define Display Stages (Standard View)
-        display_stages = []
-        for s in all_db_stages:
-            # We hide the first stage from the columns if desired, or keep it. 
-            # Usually "Yet to be Released" is kept visible, but excluded from Total.
-            if s != 'Not Started': # You can adjust this if you want to hide the renamed stage too
-                display_stages.append(s)
+        display_stages = [s for s in all_db_stages if s != 'Not Started']
 
-        # 3. Build Query
+        # --- 2. Calculate TOTAL Dispatch for Today (Global Metric) ---
+        cursor.execute("""
+            DECLARE @CurrentProductionDate DATE = CAST(DATEADD(hour, -2, GETDATE()) AS DATE);
+            DECLARE @ProductionDayStart DATETIME = DATEADD(hour, 2, CAST(@CurrentProductionDate AS DATETIME));
+            DECLARE @ProductionDayEnd DATETIME = DATEADD(day, 1, @ProductionDayStart);
+
+            SELECT SUM(quantity) FROM production_log 
+            WHERE to_stage IN ('Dispatch', 'Delivered')
+            AND moved_at >= @ProductionDayStart AND moved_at < @ProductionDayEnd
+        """)
+        total_dispatch_today = cursor.fetchone()[0] or 0
+
+        # --- 3. Build Filtered Query for Table ---
         base_query = "SELECT * FROM master WHERE 1=1"
         count_query = "SELECT COUNT(*) FROM master WHERE 1=1"
         params = []
 
         if search_query:
-            base_query += " AND ([Item code] LIKE ? OR [Description] LIKE ?)"
-            count_query += " AND ([Item code] LIKE ? OR [Description] LIKE ?)"
+            filter_clause = " AND ([Item code] LIKE ? OR [Description] LIKE ?)"
+            base_query += filter_clause
+            count_query += filter_clause
             params.extend([f'%{search_query}%', f'%{search_query}%'])
 
         if selected_type:
@@ -532,35 +537,56 @@ def wip_tracking():
             count_query += " AND [Category] = ?"
             params.append(selected_category)
 
-        # 4. Pagination
+        # --- 4. Pagination & Fetch ---
         cursor.execute(count_query, params)
         total_items = cursor.fetchone()[0]
         total_pages = ceil(total_items / per_page)
 
-        # 5. Fetch Data
         final_query = base_query + " ORDER BY [Item code] OFFSET ? ROWS FETCH NEXT ? ROWS ONLY"
         params.extend([offset, per_page])
 
         cursor.execute(final_query, params)
         master_items = [row_to_dict(cursor, row) for row in cursor.fetchall()]
 
-        # 6. Process Items
+        # --- 5. Fetch Per-Item Dispatch Counts (For the Table) ---
+        page_item_codes = [item['Item code'] for item in master_items]
+        dispatch_map = {}
+        
+        if page_item_codes:
+            placeholders = ','.join(['?'] * len(page_item_codes))
+            # Re-using the same date logic for item-specific query
+            sql_item_dispatch = f"""
+                DECLARE @CurrentProductionDate DATE = CAST(DATEADD(hour, -2, GETDATE()) AS DATE);
+                DECLARE @ProductionDayStart DATETIME = DATEADD(hour, 2, CAST(@CurrentProductionDate AS DATETIME));
+                DECLARE @ProductionDayEnd DATETIME = DATEADD(day, 1, @ProductionDayStart);
+
+                SELECT item_code, SUM(quantity) as today_qty
+                FROM production_log
+                WHERE to_stage IN ('Dispatch', 'Delivered')
+                AND moved_at >= @ProductionDayStart AND moved_at < @ProductionDayEnd
+                AND item_code IN ({placeholders})
+                GROUP BY item_code
+            """
+            cursor.execute(sql_item_dispatch, page_item_codes)
+            for row in cursor.fetchall():
+                dispatch_map[row.item_code] = row.today_qty
+
+        # --- 6. Process Items ---
         import json
         for item in master_items:
-            # A. Calculate Total Inv (Dynamic Sum)
-            # LOGIC: Sum all stages EXCEPT the First Stage and FG
+            # Inject Dispatch Count
+            item['Today_Dispatch'] = dispatch_map.get(item['Item code'], 0)
+
+            # Calculate Total WIP
             current_total = 0
             for stage in all_db_stages:
                 if stage == 'FG': continue
-                if stage == first_stage_name: continue # Exclude "Yet to be Released"
-                
+                if stage == first_stage_name: continue 
                 qty = item.get(stage)
                 if qty: current_total += int(qty)
-            
             item['Total Inv'] = current_total
 
-            # B. (Optional) We can leave this calculation in or remove it. 
-            # Since the column is removed, it won't be displayed, but we keep it to prevent errors if referenced elsewhere.
+            # Group Logic
             group_sum = 0
             breakdown = {}
             for sub in BEFORE_HYDRO_GROUP:
@@ -568,7 +594,6 @@ def wip_tracking():
                 if q > 0:
                     group_sum += int(q)
                     breakdown[sub] = int(q)
-            
             item['Before Hydro'] = group_sum
             item['Before_Hydro_Breakdown'] = json.dumps(breakdown)
 
@@ -594,7 +619,8 @@ def wip_tracking():
                            selected_category=selected_category,
                            search_query=search_query,
                            pagination=pagination,
-                           current_per_page=per_page)
+                           current_per_page=per_page,
+                           total_dispatch_today=total_dispatch_today) # Pass the total
 
 @app.route('/release_plan', methods=['POST'], endpoint='release_plan')
 def release_plan():
@@ -1033,18 +1059,20 @@ def dashboard():
 
 def calculate_monthly_trigger_adherence(conn, item_codes=None, verticals=None, categories=None, types=None):
     """
-    Calculates Monthly Adherence as the AVERAGE of individual item adherences.
-    1. For each item, calculate Monthly Adherence = Total Dispatch / Total Target
-       (Where Daily Target = Prev Day's Carryover)
-    2. Cap each item's adherence at 100%.
-    3. Return the average of all active items.
+    Calculates Monthly Adherence based on CUMULATIVE volume.
+    Formula: (Total Dispatch This Month / Total New Triggers This Month) * 100
+    
+    Logic for 'New Trigger' (Daily Demand):
+      New_Trigger = Today_Snapshot - (Yesterday_Snapshot - Yesterday_Dispatch)
+      (i.e., Today's Total - Yesterday's Remaining Backlog)
     """
     try:
         cursor = conn.cursor()
         
         today = date.today()
         start_of_month = today.replace(day=1)
-        lookback_date = start_of_month - timedelta(days=7) 
+        # We need data from slightly before the start of the month to calculate the carryover for the 1st
+        lookback_date = start_of_month - timedelta(days=5) 
 
         # --- 1. Build Filter SQL ---
         join_master = " INNER JOIN master m ON t.item_code = m.[Item code] "
@@ -1070,20 +1098,23 @@ def calculate_monthly_trigger_adherence(conn, item_codes=None, verticals=None, c
             where_clause += f" AND m.[Type] IN ({seq})"
             params.extend(types)
 
-        # --- 2. Fetch Data ---
+        # --- 2. Fetch Trigger History (Snapshots) ---
         sql_history = f"""
             SELECT t.upload_date, t.item_code, t.pending_quantity
             FROM trigger_history t
             {join_master}
             WHERE t.upload_date >= ? {where_clause}
+            ORDER BY t.upload_date ASC
         """
         history_params = [lookback_date] + params
         cursor.execute(sql_history, history_params)
         
-        history_data = defaultdict(dict)
+        # Structure: { date: { item_code: qty } }
+        history_map = defaultdict(dict)
         for row in cursor.fetchall():
-            history_data[row.upload_date][row.item_code] = row.pending_quantity
+            history_map[row.upload_date][row.item_code] = row.pending_quantity
 
+        # --- 3. Fetch Dispatch Logs ---
         sql_log = f"""
             SELECT CAST(pl.moved_at AS DATE) as move_date, pl.item_code, SUM(pl.quantity) as qty
             FROM production_log pl
@@ -1095,67 +1126,72 @@ def calculate_monthly_trigger_adherence(conn, item_codes=None, verticals=None, c
         log_params = [lookback_date] + params
         cursor.execute(sql_log, log_params)
         
-        dispatch_data = defaultdict(dict)
+        # Structure: { date: { item_code: qty } }
+        dispatch_map = defaultdict(dict)
         for row in cursor.fetchall():
-            dispatch_data[row.move_date][row.item_code] = row.qty
+            dispatch_map[row.move_date][row.item_code] = row.qty
 
-        all_dates = sorted(set(history_data.keys()) | set(dispatch_data.keys()))
+        # --- 4. Calculate Cumulative Totals ---
+        cumulative_new_triggers = 0
+        cumulative_dispatches = 0
+
+        # Get all unique dates and items involved
+        all_dates = sorted(set(history_map.keys()) | set(dispatch_map.keys()))
         all_items = set()
-        for d in history_data: all_items.update(history_data[d].keys())
-        for d in dispatch_data: all_items.update(dispatch_data[d].keys())
+        for d in history_map: all_items.update(history_map[d].keys())
+        for d in dispatch_map: all_items.update(dispatch_map[d].keys())
 
-        if not all_dates or not all_items: return 0
+        if not all_dates: return 0
 
-        # --- 3. Calculate Per-Item Adherence ---
-        item_adherence_percentages = []
+        # We need to track the "Previous State" for every item to calculate the "New Demand"
+        # prev_state format: { item_code: { 'snapshot': int, 'dispatch': int } }
+        prev_states = {} 
 
-        for item in all_items:
-            # Build timeline for this specific item
-            timeline = []
-            for d in all_dates:
-                timeline.append({
-                    'date': d,
-                    'ot': history_data.get(d, {}).get(item, 0),
-                    'dispatch': dispatch_data.get(d, {}).get(item, 0)
-                })
+        for current_date in all_dates:
+            # Skip calculation if before this month, but keep updating prev_states for carryover logic
+            is_current_month = (current_date >= start_of_month)
 
-            item_total_dispatch = 0
-            item_total_target = 0
+            for item in all_items:
+                # Get Today's Data
+                snapshot_today = history_map.get(current_date, {}).get(item, 0)
+                dispatch_today = dispatch_map.get(current_date, {}).get(item, 0)
 
-            for i, current_day in enumerate(timeline):
-                if current_day['date'] < start_of_month: continue
-
-                item_total_dispatch += current_day['dispatch']
-
-                # Target Calculation:
-                # Target = Prev_OT - Prev_Dispatch (Carryover)
-                # If we produce everything (Carryover <= 0), Target for today is 0.
-                day_target = 0
-                if i > 0:
-                    prev = timeline[i-1]
-                    carryover = prev['ot'] - prev['dispatch']
-                    day_target = max(0, carryover)
+                # Calculate New Demand Logic
+                new_demand = 0
+                
+                if item in prev_states:
+                    prev = prev_states[item]
+                    # Logic: Carryover = Previous_Snapshot - Previous_Dispatch
+                    carryover = max(0, prev['snapshot'] - prev['dispatch'])
+                    
+                    # New Demand = Today_Snapshot - Carryover
+                    # If Today_Snapshot < Carryover (e.g. data correction or manual reduction), New Demand is 0
+                    raw_new = snapshot_today - carryover
+                    new_demand = max(0, raw_new)
                 else:
-                    day_target = current_day['ot']
+                    # First time seeing item in this period? Assume Snapshot is the New Demand
+                    new_demand = snapshot_today
 
-                item_total_target += day_target
+                # Accumulate ONLY if date is in current month
+                if is_current_month:
+                    cumulative_new_triggers += new_demand
+                    cumulative_dispatches += dispatch_today
 
-            # Calculate Item %
-            if item_total_target > 0:
-                p = (item_total_dispatch / item_total_target) * 100.0
-                item_adherence_percentages.append(min(100.0, p)) # Cap at 100%
-            elif item_total_dispatch > 0:
-                # Target was 0 (clean slate), but we produced items (New triggers arrived & cleared same day)
-                # This counts as 100% adherence to demand
-                item_adherence_percentages.append(100.0)
-            # Else: Target 0, Dispatch 0 -> Inactive item, ignore from average
+                # Update State for next iteration (Use 0 if no data today, to carry forward logic)
+                # Note: If no snapshot today, we assume snapshot is 0 (cleared), so next day's new demand calc works
+                prev_states[item] = {
+                    'snapshot': snapshot_today,
+                    'dispatch': dispatch_today
+                }
 
-        # --- 4. Average of Percentages ---
-        if not item_adherence_percentages:
-            return 0
+        # --- 5. Final Calculation ---
+        if cumulative_new_triggers == 0:
+            if cumulative_dispatches > 0:
+                return 100.0 # Dispatched everything/more than planned
+            return 0.0
 
-        avg_adherence = sum(item_adherence_percentages) / len(item_adherence_percentages)
-        return avg_adherence
+        adherence = (cumulative_dispatches / cumulative_new_triggers) * 100.0
+        return min(100.0, adherence) # Cap at 100%? Or allow >100 if clearing backlog? Usually capped.
 
     except Exception as e:
         print(f"Error calculating monthly adherence: {e}")
@@ -1262,7 +1298,6 @@ def calculate_adherence(conn, item_codes=None, verticals=None, categories=None, 
     # Only return daily adherence
     return {'daily_adherence': daily_adherence}
 
-
 @app.route('/dispatch_item', methods=['POST'])
 def dispatch_item():
     # Support both JSON (from Dashboard Drag & Drop) and Form Data (from WIP Modal)
@@ -1270,9 +1305,11 @@ def dispatch_item():
         data = request.get_json()
         item_code = data.get('item_code')
         quantity = data.get('quantity')
+        from_stage = data.get('from_stage', 'FG') # Default to FG if not specified
     else:
         item_code = request.form.get('item_code')
         quantity = request.form.get('quantity')
+        from_stage = request.form.get('from_stage') or 'FG'
 
     # Validate inputs
     try:
@@ -1289,32 +1326,36 @@ def dispatch_item():
     try:
         cursor = conn.cursor()
 
-        # 1. CHECK STOCK in FG
-        cursor.execute("SELECT ISNULL([FG], 0) FROM master WHERE [Item code] = ?", (item_code,))
+        # 1. CHECK STOCK in the specific From Stage
+        # Use bracket quoting for safety with spaces (e.g. [Long seam])
+        check_sql = f"SELECT ISNULL([{from_stage}], 0) FROM master WHERE [Item code] = ?"
+        cursor.execute(check_sql, (item_code,))
         row = cursor.fetchone()
 
         if not row:
             return jsonify({'status': 'error', 'message': f"Item {item_code} not found."}), 404
 
-        current_fg_stock = row[0]
+        current_stock = row[0]
 
-        if current_fg_stock < quantity:
-            return jsonify({'status': 'error', 'message': f"Insufficient stock in FG. Available: {current_fg_stock}"}), 400
+        if current_stock < quantity:
+            return jsonify({'status': 'error', 'message': f"Insufficient stock in {from_stage}. Available: {current_stock}"}), 400
 
-        # 2. UPDATE MASTER (Deduct FG)
-        cursor.execute("UPDATE master SET [FG] = ISNULL([FG], 0) - ? WHERE [Item code] = ?", (quantity, item_code))
+        # 2. UPDATE MASTER (Deduct from specific stage)
+        update_sql = f"UPDATE master SET [{from_stage}] = ISNULL([{from_stage}], 0) - ? WHERE [Item code] = ?"
+        cursor.execute(update_sql, (quantity, item_code))
 
-        # 3. UPDATE PRODUCTION_PL (Add to Dispatch)
+        # 3. UPDATE PRODUCTION_PL (Add to Dispatch Count)
+        # We always increment the global 'Dispatch' counter regardless of where it came from
         cursor.execute("UPDATE Production_pl SET [Dispatch] = ISNULL([Dispatch], 0) + ? WHERE [Item code ] = ?", (quantity, item_code))
 
         # 4. LOG THE DISPATCH
         cursor.execute("""
             INSERT INTO production_log (item_code, from_stage, to_stage, quantity, moved_at)
-            VALUES (?, 'FG', 'Dispatch', ?, GETDATE())
-        """, (item_code, quantity))
+            VALUES (?, ?, 'Dispatch', ?, GETDATE())
+        """, (item_code, from_stage, quantity))
 
         conn.commit()
-        return jsonify({'status': 'success', 'message': f"Successfully dispatched {quantity} of {item_code}."})
+        return jsonify({'status': 'success', 'message': f"Successfully dispatched {quantity} from {from_stage}."})
 
     except Exception as e:
         conn.rollback()
@@ -1371,16 +1412,29 @@ def api_plan_page():
                 p.[S.No.], p.[Item code ], p.[Description], 
                 ISNULL(m.[Pending], 0) AS [Opening Trigger],
                 ISNULL(m.[Next Pending], 0) AS [Next Pending],
-                (ISNULL(m.[Pending], 0) - ISNULL(td.QtyDispatched, 0)) AS [Pending],
+                
+                -- FIX: Prevent Negative Pending
+                CASE 
+                    WHEN (ISNULL(m.[Pending], 0) - ISNULL(td.QtyDispatched, 0)) < 0 THEN 0 
+                    ELSE (ISNULL(m.[Pending], 0) - ISNULL(td.QtyDispatched, 0)) 
+                END AS [Pending],
+                
                 p.[Today Triggered] AS [Released Qty], 
                 m.[FG], 
                 ISNULL(td.QtyDispatched, 0) as [Dispatch],
                 ISNULL(m.[Powder coating], 0) AS [Powder coating],
                 ISNULL(m.[Hydro Testing], 0) AS [Hydro Testing],
+                
                 CASE WHEN ISNULL(m.[Pending], 0) > 0
                     THEN (CAST(ISNULL(td.QtyDispatched, 0) AS FLOAT) * 100.0 / CAST(m.[Pending] AS FLOAT))
                     ELSE 100.0 END AS ItemAdherencePercent,
-                (ISNULL(m.[Pending], 0) - ISNULL(td.QtyDispatched, 0)) AS FailureInTrigger,
+                
+                -- FIX: Prevent Negative Failure Count
+                CASE 
+                    WHEN (ISNULL(m.[Pending], 0) - ISNULL(td.QtyDispatched, 0)) < 0 THEN 0 
+                    ELSE (ISNULL(m.[Pending], 0) - ISNULL(td.QtyDispatched, 0)) 
+                END AS FailureInTrigger,
+                
                 cfr.reason AS SavedReason
             FROM Production_pl p
             LEFT JOIN master m ON p.[Item code ] = m.[Item code]
@@ -3731,7 +3785,6 @@ def upload_dispatch():
 
     return redirect(request.referrer)
 
-
 @app.route('/upload_wip_stock', methods=['POST'], endpoint='upload_wip_stock')
 @login_required
 def upload_wip_stock():
@@ -3755,107 +3808,148 @@ def upload_wip_stock():
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(filepath)
 
-        # 1. Read Second Sheet (index 1)
-        try:
-            df = pd.read_excel(filepath, sheet_name=1)
-        except IndexError:
-            flash("Error: The Excel file does not have a second sheet.", 'error')
-            return redirect(request.referrer)
-        except Exception as e:
-            flash(f"Error reading Excel file: {e}", 'error')
-            return redirect(request.referrer)
-
-        # 2. Standardize Columns
-        df.columns = [str(c).strip() for c in df.columns]
-
-        # 3. Identify Item Code Column
-        item_code_col = next((c for c in df.columns if c.lower() in ['item code', 'itemcode', 'code', 'part no']), None)
-        
-        if not item_code_col:
-            flash("Could not find an 'Item code' column in the second sheet.", 'error')
-            return redirect(request.referrer)
-
-        # 4. Identify Data Columns
-        col_map = {
-            'PDI': None,
-            'PC': None,
-            'Hydro': None,
-            'WIP': None
-        }
-
-        for col in df.columns:
-            u_col = col.upper()
-            if u_col == 'PDI':
-                col_map['PDI'] = col
-            elif u_col in ['PC', 'POWDER COATING', 'POWDERCOATING']:
-                col_map['PC'] = col
-            elif u_col in ['HYDRO', 'HYDRO TESTING', 'HYDROTESTING']:
-                col_map['Hydro'] = col
-            elif u_col == 'WIP':
-                col_map['WIP'] = col
-
-        # Validate required columns
-        missing_cols = [k for k, v in col_map.items() if v is None]
-        if missing_cols:
-             flash(f"Missing columns in Excel: {', '.join(missing_cols)}", 'error')
-             return redirect(request.referrer)
-
         cursor = conn.cursor()
+        messages = []
 
-        # 5. Process Rows and Update DB
-        update_count = 0
-        
-        for index, row in df.iterrows():
-            item_code = str(row[item_code_col]).strip()
+        # =================================================================================
+        # PART 1: UPDATE WIP (Existing Logic - Sheet Index 1)
+        # =================================================================================
+        try:
+            df_wip = pd.read_excel(filepath, sheet_name=1)
             
-            # Helper to get float value safely
-            def get_val(excel_col_name):
-                try:
-                    val = float(row[excel_col_name])
-                    return 0 if pd.isna(val) else int(val)
-                except:
-                    return 0
+            # --- NEW CHANGE: Reset FG to 0 for ALL items before updating WIP ---
+            cursor.execute("UPDATE master SET [FG] = 0")
+            # -------------------------------------------------------------------
 
-            pdi_val = get_val(col_map['PDI'])
-            pc_val = get_val(col_map['PC'])
-            hydro_val = get_val(col_map['Hydro'])
-            wip_val = get_val(col_map['WIP'])
+            # Standardize Columns
+            df_wip.columns = [str(c).strip() for c in df_wip.columns]
+            
+            # Identify Item Code Column
+            item_code_col = next((c for c in df_wip.columns if c.lower() in ['item code', 'itemcode', 'code', 'part no']), None)
+            
+            if item_code_col:
+                col_map = {'PDI': None, 'PC': None, 'Hydro': None, 'WIP': None}
+                for col in df_wip.columns:
+                    u_col = col.upper()
+                    if u_col == 'PDI': col_map['PDI'] = col
+                    elif u_col in ['PC', 'POWDER COATING']: col_map['PC'] = col
+                    elif u_col in ['HYDRO', 'HYDRO TESTING']: col_map['Hydro'] = col
+                    elif u_col == 'WIP': col_map['WIP'] = col
 
-            # --- FORMULA ---
-            # Released = WIP - (PDI + PC + Hydro)
-            released_val = wip_val - (pdi_val + pc_val + hydro_val)
+                # Helper to get float value safely
+                def get_val(row, col_name):
+                    try:
+                        val = float(row[col_name])
+                        return 0 if pd.isna(val) else int(val)
+                    except: return 0
 
-            if released_val < 0: 
-                released_val = 0 
+                update_count = 0
+                for index, row in df_wip.iterrows():
+                    item_code = str(row[item_code_col]).strip()
+                    pdi_val = get_val(row, col_map['PDI']) if col_map['PDI'] else 0
+                    pc_val = get_val(row, col_map['PC']) if col_map['PC'] else 0
+                    hydro_val = get_val(row, col_map['Hydro']) if col_map['Hydro'] else 0
+                    wip_val = get_val(row, col_map['WIP']) if col_map['WIP'] else 0
+                    
+                    # Formula: Released = WIP - (PDI + PC + Hydro)
+                    released_val = max(0, wip_val - (pdi_val + pc_val + hydro_val))
 
-            # --- UPDATE QUERY ---
-            # Explicitly updates the 'Released' column.
-            update_sql = """
-                UPDATE master 
-                SET 
-                    [PDI] = ?,
-                    [Hydro Testing] = ?,
-                    [Powder coating] = ?,
-                    [Released] = ?
-                WHERE [Item code] = ?
-            """
-            cursor.execute(update_sql, pdi_val, hydro_val, pc_val, released_val, item_code)
-            update_count += cursor.rowcount
+                    cursor.execute("""
+                        UPDATE master 
+                        SET [PDI] = ?, [Hydro Testing] = ?, [Powder coating] = ?, [Released] = ?
+                        WHERE [Item code] = ?
+                    """, pdi_val, hydro_val, pc_val, released_val, item_code)
+                    update_count += cursor.rowcount
+                
+                messages.append(f"WIP Update: FG cleared to 0. Processed {update_count} items.")
+            else:
+                messages.append("WIP Update Skipped: Could not find 'Item code' in Sheet 2.")
+
+        except Exception as e:
+            messages.append(f"WIP Update Failed: {str(e)}")
+
+        # =================================================================================
+        # PART 2: UPDATE TRIGGER HISTORY (New Logic - Sheet Index 0)
+        # =================================================================================
+        try:
+            # Read First Sheet
+            df_triggers = pd.read_excel(filepath, sheet_name=1)
+            
+            # Identify Item Code Column
+            item_code_col_trig = next((c for c in df_triggers.columns if str(c).lower() in ['item code', 'itemcode', 'code', 'part no', 'spl']), None)
+
+            if item_code_col_trig:
+                # Find Date Columns (e.g., "01-Jan", "02-Jan")
+                # We assume current year if not specified, or parse carefully
+                current_year = datetime.now().year
+                date_cols = []
+                
+                for col in df_triggers.columns:
+                    col_str = str(col).strip()
+                    try:
+                        # Try parsing "01-Jan" format
+                        parsed_date = datetime.strptime(f"{col_str}-{current_year}", "%d-%b-%Y")
+                        date_cols.append((col, parsed_date))
+                    except ValueError:
+                        # Try existing datetime object (if Excel parsed it automatically)
+                        if isinstance(col, datetime):
+                            date_cols.append((col, col))
+                        continue
+
+                if date_cols:
+                    # 1. Identify the month range to clear from history
+                    # We collect all months found in the file (usually just one, e.g., Jan)
+                    months_to_clear = set((d[1].year, d[1].month) for d in date_cols)
+                    
+                    for (year, month) in months_to_clear:
+                        cursor.execute("DELETE FROM trigger_history WHERE YEAR(upload_date) = ? AND MONTH(upload_date) = ?", year, month)
+                    
+                    messages.append(f"Trigger History: Cleared existing data for {len(months_to_clear)} month(s).")
+
+                    # 2. Prepare Data for Insertion
+                    history_records = []
+                    for index, row in df_triggers.iterrows():
+                        raw_code = row[item_code_col_trig]
+                        if pd.isna(raw_code): continue
+                        item_code = str(raw_code).strip()
+
+                        for (col_name, date_obj) in date_cols:
+                            try:
+                                qty = float(row[col_name])
+                                if qty > 0: # Only insert pending quantities > 0
+                                    # Format date for SQL
+                                    sql_date = date_obj.strftime('%Y-%m-%d')
+                                    history_records.append((sql_date, item_code, int(qty)))
+                            except (ValueError, TypeError):
+                                continue
+                    
+                    # 3. Batch Insert
+                    if history_records:
+                        insert_sql = "INSERT INTO trigger_history (upload_date, item_code, pending_quantity) VALUES (?, ?, ?)"
+                        cursor.executemany(insert_sql, history_records)
+                        messages.append(f"Trigger History: Inserted {len(history_records)} new trigger records.")
+                    else:
+                        messages.append("Trigger History: No positive pending quantities found.")
+
+                else:
+                    messages.append("Trigger History Skipped: No date columns (e.g., '01-Jan') found.")
+            else:
+                messages.append("Trigger History Skipped: Could not find 'Item code' in Sheet 1.")
+
+        except Exception as e:
+            messages.append(f"Trigger History Failed: {str(e)}")
 
         conn.commit()
-        flash(f"Successfully processed {update_count} items. Updated PDI, Hydro, PC, and 'Released'.", 'success')
+        flash(" | ".join(messages), 'info')
 
     except Exception as e:
         if conn: conn.rollback()
-        # This error helps debug if the column 'Released' doesn't exist
-        flash(f"Error processing upload: {e}", 'error')
+        flash(f"Critical Error: {e}", 'error')
         traceback.print_exc()
     finally:
         if conn: conn.close()
         if filepath and os.path.exists(filepath):
-            try:
-                os.remove(filepath)
-            except:
-                pass
+            try: os.remove(filepath)
+            except: pass
 
     return redirect(request.referrer)

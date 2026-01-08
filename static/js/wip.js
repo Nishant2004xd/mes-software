@@ -4,6 +4,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const config = window.wipConfig || {};
     const allStages = config.stages || [];
     const groupStages = config.groupStages || [];
+    const urls = config.urls || {};
     
     // --- 2. MODAL LOGIC ---
     const actionModal = document.getElementById('action-modal');
@@ -21,44 +22,84 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
 
+// --- Helper for Toggling Dispatch in Non-FG Stages ---
+    window.toggleDirectDispatch = function() {
+        const moveForm = document.getElementById('move-form');
+        const dispatchForm = document.getElementById('dispatch-form');
+        const toggleDiv = document.getElementById('direct-dispatch-toggle');
+        const toggleBtn = toggleDiv ? toggleDiv.querySelector('button') : null;
+        
+        if (dispatchForm.style.display === 'none') {
+            // Switch to Dispatch Mode
+            moveForm.style.display = 'none';
+            dispatchForm.style.display = 'block';
+            if (toggleBtn) {
+                toggleBtn.textContent = "Back to Move";
+                toggleBtn.classList.remove('button-ghost');
+                toggleBtn.classList.add('button-secondary'); // Make it look active/different
+            }
+        } else {
+            // Switch back to Move Mode
+            moveForm.style.display = 'block';
+            dispatchForm.style.display = 'none';
+            if (toggleBtn) {
+                toggleBtn.textContent = "Dispatch";
+                toggleBtn.classList.add('button-ghost');
+                toggleBtn.classList.remove('button-secondary');
+            }
+        }
+    };
+
     function openActionModal(itemCode, stage, quantity, breakdown) {
         // Update Title & Subtitle
         document.getElementById('action-modal-title').textContent = `Actions for ${itemCode}`;
         document.getElementById('action-modal-subtitle').textContent = `${stage} | Available: ${quantity}`;
 
-        // --- 1. Setup Move Form ---
+        // --- 1. Setup Form Elements ---
         const moveForm = document.getElementById('move-form');
         const dispatchForm = document.getElementById('dispatch-form');
+        const directDispatchToggle = document.getElementById('direct-dispatch-toggle');
         
         const sourceDisplay = document.getElementById('source-stage-display');
         const sourceHidden = document.getElementById('source-stage-hidden');
 
+        // --- SETUP DISPATCH FIELDS (Common defaults) ---
+        document.getElementById('dispatch-item-code').value = itemCode;
+        document.getElementById('dispatch-from-stage').value = stage; 
+        document.getElementById('dispatch-quantity').max = quantity;
+        document.getElementById('dispatch-quantity').value = 1;
+
         if (stage === 'FG') {
-            // IF FG: Hide Move, Show Dispatch
+            // IF FG: Hide Move, Show Dispatch, Hide Toggle
             moveForm.style.display = 'none';
             dispatchForm.style.display = 'block';
+            if(directDispatchToggle) directDispatchToggle.style.display = 'none';
 
-            // Setup Dispatch Inputs
-            document.getElementById('dispatch-item-code').value = itemCode;
-            document.getElementById('dispatch-quantity').max = quantity;
-            document.getElementById('dispatch-quantity').value = 1;
         } else {
-            // IF NORMAL STAGE: Show Move, Hide Dispatch
+            // IF NORMAL STAGE: Show Move, Hide Dispatch, Show Toggle
             moveForm.style.display = 'block';
             dispatchForm.style.display = 'none';
-
-            // Setup Item Code & Source Display
-            document.getElementById('move-item-code').value = itemCode;
-            sourceDisplay.value = stage; // User sees "Before Hydro"
             
-            // --- AUTO-SELECT SOURCE LOGIC ---
+            // Reset toggle button text
+            if(directDispatchToggle) {
+                directDispatchToggle.style.display = 'block';
+                const btn = directDispatchToggle.querySelector('button');
+                if(btn) {
+                    btn.textContent = "Dispatch"; // UPDATED TEXT
+                    btn.classList.add('button-ghost'); // Reset style
+                }
+            }
+
+            // ... (Rest of your existing Move logic remains unchanged) ...
+            
+            // Setup Move Item Code & Source Display
+            document.getElementById('move-item-code').value = itemCode;
+            sourceDisplay.value = stage; 
+            
+            // --- AUTO-SELECT SOURCE LOGIC (For Virtual Groups like "Before Hydro") ---
             if (stage === 'Before Hydro' && breakdown) {
-                // We need to deduct from a real column in the DB.
-                // We pick the LATEST stage in the group that has stock.
                 let bestSource = null;
                 let maxQty = 0;
-
-                // Iterate group in reverse to find the "furthest" item
                 const reversedGroup = [...groupStages].reverse();
                 for (const s of reversedGroup) {
                     if (breakdown[s] && breakdown[s] > 0) {
@@ -69,55 +110,47 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
 
                 if (bestSource) {
-                    sourceHidden.value = bestSource; // Send real DB name (e.g. "Full welding")
+                    sourceHidden.value = bestSource;
                     document.getElementById('move-quantity').max = maxQty;
                     document.getElementById('move-quantity').value = 1;
+                    document.getElementById('dispatch-from-stage').value = bestSource; 
+                    document.getElementById('dispatch-quantity').max = maxQty;
                 } else {
-                    // Fallback (shouldn't happen if total > 0)
                     sourceHidden.value = stage;
                     document.getElementById('move-quantity').max = quantity;
                 }
             } else {
-                // Standard Single Stage
                 sourceHidden.value = stage;
                 document.getElementById('move-quantity').max = quantity;
                 document.getElementById('move-quantity').value = 1;
             }
 
-            // --- DESTINATION STAGE LOGIC (Allow Previous Stages) ---
+            // --- DESTINATION STAGE LOGIC ---
             const destSelect = document.getElementById('dest-stage');
             destSelect.innerHTML = '';
-
-            // Add ALL stages except the current one
             allStages.forEach(s => {
                 if (s !== stage) {
-                    const option = new Option(s, s);
-                    destSelect.add(option);
+                    destSelect.add(new Option(s, s));
                 }
             });
 
-            // Attempt to Auto-select the NEXT logical stage for convenience
             const currentIndex = allStages.indexOf(stage);
             if (currentIndex >= 0 && currentIndex < allStages.length - 1) {
-                // Select the next one in the list
                 destSelect.value = allStages[currentIndex + 1];
             } else if (destSelect.options.length > 0) {
-                // Fallback to first option
                 destSelect.selectedIndex = 0;
             }
         }
 
-        // --- 2. Setup Flag Form (Always available) ---
+        // --- 2. Setup Flag Form ---
         document.getElementById('flag-item-code').value = itemCode;
         document.getElementById('flag-stage').value = stage; 
         document.getElementById('flag-quantity').max = quantity;
         document.getElementById('flag-quantity').value = 1;
         document.getElementById('flag-remark').value = '';
 
-        // Show Modal
         if (actionModal) actionModal.style.display = "block";
     }
-
     // --- 3. AJAX SUBMISSIONS ---
 
     // Move Form
@@ -180,13 +213,24 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    // Dispatch Form
+    // Dispatch Form (Now handles dynamic from_stage)
     const dispatchForm = document.getElementById('dispatch-form');
     if (dispatchForm) {
         dispatchForm.addEventListener('submit', function(e) {
             e.preventDefault();
-            const formData = new FormData(this);
-            fetch(config.urls.dispatchItem, { method: 'POST', body: formData })
+            
+            // Manually construct JSON to include the hidden from_stage
+            const data = {
+                item_code: document.getElementById('dispatch-item-code').value,
+                from_stage: document.getElementById('dispatch-from-stage').value,
+                quantity: document.getElementById('dispatch-quantity').value
+            };
+
+            fetch(config.urls.dispatchItem, { 
+                method: 'POST', 
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(data) 
+            })
             .then(response => response.json())
             .then(result => {
                 if (result.status === 'success') { window.location.reload(); } 

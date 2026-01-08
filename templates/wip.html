@@ -10,7 +10,15 @@
     <div class="content-card">
         {# --- Unified Header & Toolbar --- #}
         <div class="filter-toolbar">
-            <h1 class="toolbar-title">WIP Tracker</h1>
+            <div style="display: flex; align-items: center; gap: 15px;">
+                <h1 class="toolbar-title">WIP Tracker</h1>
+                
+                {# --- NEW: Total Dispatch Badge --- #}
+                <div style="background-color: #dcfce7; color: #166534; padding: 4px 10px; border-radius: 20px; font-size: 0.8rem; font-weight: 700; border: 1px solid #bbf7d0; display: flex; align-items: center; gap: 6px;">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+                    Today's Dispatch: {{ total_dispatch_today|int }}
+                </div>
+            </div>
 
             <form action="{{ url_for('wip_tracking') }}" method="GET" class="toolbar-actions">
                 
@@ -61,6 +69,10 @@
                         <th class="col-left" style="width: 120px;">Item Code</th>
                         <th class="col-left">Description</th>
                         <th class="col-center bg-highlight">Total Inv</th>
+                        
+                        {# --- NEW HEADER: Dispatch --- #}
+                        <th class="col-center" style="background-color: #dcfce7; color: #15803d; border-right: 2px solid #bbf7d0;">Dispatched</th>
+
                         {% for stage in stages %}
                             {# Highlight Header if Not Started #}
                             <th class="col-center {% if stage == 'Not Started' %}bg-not-started-header{% endif %}">{{ stage }}</th>
@@ -77,6 +89,11 @@
 
                         <td class="col-center bg-highlight">
                             {{ item['Total Inv'] }}
+                        </td>
+
+                        {# --- NEW CELL: Dispatch Count --- #}
+                        <td class="col-center" style="background-color: #f0fdf4; font-weight: 700; color: #15803d; border-right: 2px solid #e2e8f0;">
+                            {{ item['Today_Dispatch']|int }}
                         </td>
 
                         {% for stage in stages %}
@@ -103,7 +120,7 @@
                         {% endfor %}
                     </tr>
                     {% else %}
-                    <tr><td colspan="{{ 4 + stages|length }}" style="text-align: center; padding: 40px; color: var(--text-muted);">No items found.</td></tr>
+                    <tr><td colspan="{{ 6 + stages|length }}" style="text-align: center; padding: 40px; color: var(--text-muted);">No items found.</td></tr>
                     {% endfor %}
                 </tbody>
             </table>
@@ -185,6 +202,7 @@
                 {# Dispatch Form #}
                 <form id="dispatch-form" action="{{ url_for('dispatch_item') }}" method="POST" style="display:none;">
                     <input type="hidden" id="dispatch-item-code" name="item_code">
+                    <input type="hidden" id="dispatch-from-stage" name="from_stage">
                     
                     <div class="form-group">
                         <label class="modal-label">Quantity to Dispatch</label>
@@ -195,6 +213,13 @@
                         Confirm Dispatch
                     </button>
                 </form>
+
+                {# Direct Dispatch Toggle #}
+                <div id="direct-dispatch-toggle" style="margin-top: 15px; text-align: center; border-top: 1px solid #e2e8f0; padding-top: 10px; display: none;">
+                    <button type="button" class="button button-small button-ghost" onclick="toggleDirectDispatch()">
+                        Dispatch
+                    </button>
+                </div>
             </div>
 
             {# --- SECTION 2: SECONDARY ACTION (Report Issue) --- #}
