@@ -2,33 +2,14 @@
 == FILE: config.py
 ======================================================================
 
-# config.py
-
+# config.py updates
 class Config:
-    """
-    Configuration class for the Flask application.
-    Stores database connection details and other settings.
-    """
-    SECRET_KEY = 'nishant'  # Change this to your own random string
-    # --- DATABASE CONFIGURATION ---
-
-    # The name of your SQL Server instance.
-    # This is the value you use to connect in SQL Server Management Studio.
-    SERVER = 'DESKTOP-29MHU7D\\MSSQLSERVER01'
-
-    # The name of the specific database you want to connect to.
+    SECRET_KEY = 'nishant'
+    SERVER = 'elgi.database.windows.net' # Azure Server Name
     DATABASE = 'ELGI_Dash'
-
-    # The ODBC driver for SQL Server.
-    # 'ODBC Driver 17 for SQL Server' is a common modern choice.
-    # Ensure this driver is installed on the machine running the application.
+    USERNAME = 'elgiadmin'
+    PASSWORD = 'admin@123'
     DRIVER = '{ODBC Driver 17 for SQL Server}'
-
-    # Since we are using Windows Authentication (Integrated Security),
-    # a username and password are not required in this file.
-    # The connection string will specify 'Trusted_Connection=yes'.
-
-
 
 ======================================================================
 == FILE: requirements.txt
@@ -77,7 +58,7 @@ app = Flask(__name__,
 
 # Load Config
 app.config.from_object(Config)
-
+app.secret_key = Config.SECRET_KEY
 # --- 2. Initialize Login Manager ---
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'  # Redirects unauthorized users to the 'login' route
@@ -95,23 +76,25 @@ from app import routes
 import pyodbc
 from config import Config
 from datetime import datetime, date
+from flask import g
+
+# Updated database.py
+import pyodbc
+from config import Config
 
 def get_db_connection():
-    try:
-        connection_string = (
-            f"DRIVER={Config.DRIVER};"
-            f"SERVER={Config.SERVER};"
-            f"DATABASE={Config.DATABASE};"
-            f"Trusted_Connection=yes;"
-        )
-        conn = pyodbc.connect(connection_string)
-        return conn
-    except pyodbc.Error as ex:
-        sqlstate = ex.args[0]
-        print(f"ERROR: Database connection failed.")
-        print(f"SQLSTATE: {sqlstate}")
-        print(ex)
-        return None
+    conn_str = (
+        f"DRIVER={Config.DRIVER};"
+        f"SERVER={Config.SERVER};"
+        f"PORT=1433;"
+        f"DATABASE={Config.DATABASE};"
+        f"UID={Config.USERNAME};"
+        f"PWD={Config.PASSWORD};"
+        "Encrypt=yes;"
+        "TrustServerCertificate=no;"
+        "Connection Timeout=30;"
+    )
+    return pyodbc.connect(conn_str)
 
 
 def row_to_dict(cursor, row):
@@ -436,7 +419,6 @@ def prioritize_plan_with_ahp(df_plan, weights):
 
 # In app/routes.py
 @app.route('/', endpoint='production_planning')
-@login_required
 def production_planning():
     check_and_clear_daily_tables()
     ahp_weights = session.get('ahp_weights', DEFAULT_AHP_WEIGHTS.copy())
@@ -819,7 +801,6 @@ def release_plan():
     return redirect(url_for('production_planning'))
 
 @app.route('/dashboard', endpoint='dashboard')
-@login_required
 def dashboard():
     current_view = request.args.get('view', 'overview')
     filter_type = request.args.get('type')

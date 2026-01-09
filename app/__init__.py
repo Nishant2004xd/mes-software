@@ -14,7 +14,7 @@ app = Flask(__name__,
 
 # Load Config
 app.config.from_object(Config)
-
+app.secret_key = Config.SECRET_KEY
 # --- 2. Initialize Login Manager ---
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'  # Redirects unauthorized users to the 'login' route

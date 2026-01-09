@@ -578,5 +578,5 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Init & Poll (Set to 10 seconds to avoid choking DB)
     refreshDashboardData();
-    if (planTableBody) setInterval(refreshDashboardData, 10000); 
+    if (planTableBody) setInterval(refreshDashboardData, 60000); 
 });

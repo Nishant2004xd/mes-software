@@ -288,7 +288,6 @@ def prioritize_plan_with_ahp(df_plan, weights):
 
 # In app/routes.py
 @app.route('/', endpoint='production_planning')
-@login_required
 def production_planning():
     check_and_clear_daily_tables()
     ahp_weights = session.get('ahp_weights', DEFAULT_AHP_WEIGHTS.copy())
@@ -671,7 +670,6 @@ def release_plan():
     return redirect(url_for('production_planning'))
 
 @app.route('/dashboard', endpoint='dashboard')
-@login_required
 def dashboard():
     current_view = request.args.get('view', 'overview')
     filter_type = request.args.get('type')
